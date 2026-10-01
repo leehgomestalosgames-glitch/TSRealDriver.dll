@@ -1391,6 +1391,7 @@ void enter_walk_mode() {
 
     if (!game_camera_bridge_request_debug(1200)) {
         log_line(std::wstring(L"Walk enter failed: ") + game_camera_bridge_status().error);
+        log_line(game_camera_bridge_census());
         transition_fade(false);
         set_ui_status(L"NATIVE WALK CAMERA NOT READY");
         return;
@@ -1951,14 +1952,16 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
 
     if (game_camera_bridge_resolve()) {
         log_line(game_camera_bridge_report());
+        log_line(game_camera_bridge_census());
     } else {
         log_line(std::wstring(L"GameCameraBridge resolve failed: ") +
                  game_camera_bridge_status().error);
+        log_line(game_camera_bridge_census());
     }
 
     g_stop = false;
     g_worker = std::thread(worker_main);
-    log_line(L"TSRealDriver 0.5 initialized.");
+    log_line(L"TSRealDriver 0.5.1 initialized.");
     return 0;
 }
 
