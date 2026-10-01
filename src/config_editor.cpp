@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <shellapi.h>
 
 #include <filesystem>
 #include <fstream>
@@ -91,16 +92,16 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                 ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN,
             12, 12, 900, 575,
             hwnd,
-            reinterpret_cast<HMENU>(ID_EDITOR),
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDITOR)),
             nullptr,
             nullptr);
 
         CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            12, 600, 110, 32, hwnd, reinterpret_cast<HMENU>(ID_SAVE), nullptr, nullptr);
+            12, 600, 110, 32, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SAVE)), nullptr, nullptr);
         CreateWindowW(L"BUTTON", L"Reload", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            132, 600, 110, 32, hwnd, reinterpret_cast<HMENU>(ID_RELOAD), nullptr, nullptr);
+            132, 600, 110, 32, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_RELOAD)), nullptr, nullptr);
         CreateWindowW(L"BUTTON", L"Open folder", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            252, 600, 130, 32, hwnd, reinterpret_cast<HMENU>(ID_FOLDER), nullptr, nullptr);
+            252, 600, 130, 32, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_FOLDER)), nullptr, nullptr);
 
         HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         SendMessageW(g_editor, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
