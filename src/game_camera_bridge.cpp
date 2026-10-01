@@ -483,3 +483,59 @@ std::wstring game_camera_bridge_report() {
 
     return out.str();
 }
+
+
+std::wstring game_camera_bridge_census() {
+    std::wostringstream out;
+
+    if (!game_camera_bridge_refresh()) {
+        out << L"[camera] census unavailable: " << g_status.error;
+        return out.str();
+    }
+
+    std::uintptr_t slots = 0;
+    std::uint64_t count = 0;
+    if (!safe_read_value(g_status.managerObject + 0x38, slots) ||
+        !safe_read_value(g_status.managerObject + 0x40, count) ||
+        !slots ||
+        count == 0 ||
+        count > 64) {
+        out << L"[camera] census invalid slot array";
+        return out.str();
+    }
+
+    out << L"[camera] census: manager=0x" << std::hex << g_status.managerObject
+        << L" current=" << std::dec << g_status.currentCameraSlot
+        << L" requested_field=";
+
+    std::uint32_t requested = 0;
+    safe_read_value(g_status.managerObject + 0x14, requested);
+    out << requested
+        << L" slots=" << count;
+
+    const std::uintptr_t moduleBase =
+        reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+
+    for (std::uint64_t i = 0; i < count; ++i) {
+        std::uintptr_t object = 0;
+        safe_read_value(slots + i * sizeof(std::uintptr_t), object);
+
+        out << L"\n[camera] slot " << std::dec << i << L": ";
+        if (!object) {
+            out << L"(empty)";
+            continue;
+        }
+
+        std::string className;
+        if (object_class_name(object, moduleBase, className)) {
+            std::wstring wide(className.begin(), className.end());
+            out << L"object=0x" << std::hex << object
+                << L" class=" << wide;
+        } else {
+            out << L"object=0x" << std::hex << object
+                << L" class=<unresolved>";
+        }
+    }
+
+    return out.str();
+}
