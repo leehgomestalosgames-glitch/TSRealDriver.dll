@@ -183,7 +183,7 @@ void load_settings() {
     g_settings.autoDoorOffset = parse_ini_bool(L"camera", L"auto_door_offset", true);
     g_settings.sprintWheelNotches = parse_ini_int(L"camera", L"sprint_wheel_notches", 3);
 
-    QueryWriteTime(g_iniPath.c_str(), &g_lastIniWrite);
+    query_write_time(g_iniPath, g_lastIniWrite);
     log_line(L"Configuration loaded.");
 }
 
