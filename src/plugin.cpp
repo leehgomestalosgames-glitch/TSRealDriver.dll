@@ -812,6 +812,10 @@ void worker_main() {
     Edge resetEyeEdge;
 
     auto lastReloadCheck = Clock::now();
+    auto nextStep = Clock::now();
+    auto nextBreath = Clock::now();
+    Clock::time_point sprintStarted{};
+    int bobPhase = 1;
 
     while (!g_stop.load()) {
         pump_messages();
@@ -878,6 +882,49 @@ void worker_main() {
                     set_ui_status(L"WALK MODE");
                 }
                 sprintHeld = sprintNow;
+            }
+
+            const bool movingNow =
+                key_down(g_settings.forwardKey) ||
+                key_down(g_settings.backwardKey) ||
+                key_down(g_settings.leftKey) ||
+                key_down(g_settings.rightKey);
+
+            const auto motionNow = Clock::now();
+            if (movingNow) {
+                const double speed = std::max(0.25,
+                    g_settings.walkSpeed * (sprintNow ? std::max(1.0, g_settings.sprintMultiplier) : 1.0));
+                const double stride = std::max(0.25,
+                    g_settings.stepLength * (sprintNow ? std::max(0.40, g_settings.runStride) : 1.0));
+                const double intervalSeconds = std::clamp(stride / speed, 0.12, 1.20);
+
+                if (motionNow >= nextStep) {
+                    play_audio(sprintNow ? L"runstep.wav" : L"footstep.wav");
+
+                    if (g_settings.headBob) {
+                        const int bobPixels = std::max(1, static_cast<int>(std::round(g_settings.bobAmount * 500.0)));
+                        const int swayPixels = std::max(0, static_cast<int>(std::round(g_settings.swayAmount * 500.0)));
+                        mouse_nudge(bobPhase * swayPixels, bobPhase * bobPixels);
+                        bobPhase = -bobPhase;
+                    }
+
+                    nextStep = motionNow + std::chrono::duration_cast<Clock::duration>(
+                        std::chrono::duration<double>(intervalSeconds));
+                }
+
+                if (sprintNow) {
+                    if (sprintStarted == Clock::time_point{}) sprintStarted = motionNow;
+                    const double runningFor = std::chrono::duration<double>(motionNow - sprintStarted).count();
+                    if (g_settings.breathingSound && runningFor >= g_settings.tiredAfterSeconds && motionNow >= nextBreath) {
+                        play_audio(L"breath.wav");
+                        nextBreath = motionNow + 3s;
+                    }
+                } else {
+                    sprintStarted = Clock::time_point{};
+                }
+            } else {
+                nextStep = motionNow;
+                sprintStarted = Clock::time_point{};
             }
 
             const bool crouchNow = key_down(g_settings.crouchKey);
