@@ -399,9 +399,9 @@ void paint(HDC dc, const RECT& client) {
 
     RECT header{0, 0, client.right, 94};
     fill(dc, header, PANEL);
-    text(dc, 38, 18, L"TS REAL DRIVER", 20, ACCENT, FW_BOLD);
+    text(dc, 38, 18, L"TS REAL DRIVE", 20, ACCENT, FW_BOLD);
     text(dc, 38, 54, L"Walking, camera, interaction and simulation settings", 10, MUTED);
-    text(dc, client.right - 208, 25, L"v0.5.1 NATIVE CAMERA", 9, MUTED, FW_BOLD);
+    text(dc, client.right - 208, 25, L"v0.5.2 CAMERA FIX", 9, MUTED, FW_BOLD);
 
     for (int i = 0; i < static_cast<int>(g_tabs.size()); ++i) {
         const RECT tr = tab_rect(i);
@@ -666,7 +666,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     HWND hwnd = CreateWindowExW(
         WS_EX_APPWINDOW,
         className,
-        L"TSRealDriver Settings",
+        L"TS Real Drive Settings",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 1240, 880,
         nullptr, nullptr, instance, nullptr);
