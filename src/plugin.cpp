@@ -744,6 +744,7 @@ void update_context_prompt() {
     if (!g_haveTelemetry) {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         g_ui.context = L"TSMS TELEMETRY OFFLINE - CAMERA FALLBACK";
+        if (g_promptWindow) InvalidateRect(g_promptWindow, nullptr, FALSE);
         return;
     }
 
@@ -758,6 +759,7 @@ void update_context_prompt() {
     } else {
         g_ui.context = L"";
     }
+    if (g_promptWindow) InvalidateRect(g_promptWindow, nullptr, FALSE);
 }
 
 void handle_trailer_interaction() {
