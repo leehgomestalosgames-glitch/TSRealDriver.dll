@@ -193,6 +193,7 @@ void build_tabs() {
         slider(L"Black screen minimum (ms)", L"camera", L"fade_min_ms", 900, 0, 4000, 50),
         slider(L"Black screen maximum (ms)", L"camera", L"fade_max_ms", 3500, 0, 6000, 50),
         toggle(L"Automatic driver-door offset", L"camera", L"auto_door_offset", true),
+        toggle(L"Block truck controls while walking", L"camera", L"block_game_keys", true),
         toggle(L"Use native mouse look", L"camera", L"native_mouse_look", true),
         toggle(L"Follow ground away from truck", L"collision", L"far_ground_estimate", true),
         toggle(L"Buildings and fences block movement", L"collision", L"world_collision", false),
