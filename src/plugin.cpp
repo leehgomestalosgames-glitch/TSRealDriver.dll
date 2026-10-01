@@ -1715,6 +1715,7 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
     g_logPath = g_moduleDir / L"TSRealDriver.log";
     g_configExePath = g_moduleDir / L"TSRealDriverConfig.exe";
     g_audioDir = g_moduleDir / L"TSRealDriver.audio";
+    g_tanksPath = g_moduleDir / L"TSRealDriver.tanks.ini";
     ensure_audio_assets();
 
     native_game_bridge_initialize();
@@ -1722,7 +1723,7 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
 
     g_stop = false;
     g_worker = std::thread(worker_main);
-    log_line(L"TSRealDriver 0.3 initialized.");
+    log_line(L"TSRealDriver 0.4 initialized.");
     return 0;
 }
 
