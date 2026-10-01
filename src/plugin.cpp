@@ -1,29 +1,839 @@
 #include <windows.h>
+
+#include <atomic>
+#include <array>
+#include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <string>
+#include <thread>
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+using namespace std::chrono_literals;
+
 HMODULE g_module = nullptr;
+std::atomic_bool g_stop{false};
+std::thread g_worker;
+
+struct Settings {
+    int toggleKey = VK_F10;
+    int interactKey = 'F';
+    int forwardKey = 'W';
+    int backwardKey = 'S';
+    int leftKey = 'A';
+    int rightKey = 'D';
+    int sprintKey = VK_SHIFT;
+    int crouchKey = VK_CONTROL;
+    int jumpKey = VK_SPACE;
+    int eyeDownKey = 'Q';
+    int eyeUpKey = 'E';
+    int eyeResetKey = 'R';
+    int buildingKey = VK_F8;
+    int flashlightKey = VK_RBUTTON;
+    int flashlightSizeKey = 'G';
+    int fuelModeKey = VK_F7;
+    int consoleKey = VK_OEM_3;
+
+    double walkSpeed = 1.75;
+    double sprintMultiplier = 2.60;
+    double crouchDropSeconds = 0.16;
+    double jumpUpSeconds = 0.12;
+    double jumpHangSeconds = 0.12;
+    double jumpDownSeconds = 0.16;
+
+    bool prompts = true;
+    bool flashlightEnabled = true;
+    bool fuelEnabled = true;
+    bool debugCameraBridge = true;
+    bool autoDoorOffset = true;
+    int sprintWheelNotches = 3;
+};
+
+struct UiState {
+    bool walking = false;
+    bool paused = false;
+    bool flashlight = false;
+    int flashlightSize = 1;
+    int fuelStage = 0;
+    bool fueling = false;
+    bool buildingMode = false;
+    std::wstring status = L"READY";
+};
+
+Settings g_settings;
+std::mutex g_stateMutex;
+UiState g_ui;
+
+std::filesystem::path g_moduleDir;
+std::filesystem::path g_iniPath;
+std::filesystem::path g_logPath;
+std::filesystem::path g_configExePath;
+
+HWND g_promptWindow = nullptr;
+HWND g_flashlightWindow = nullptr;
+FILETIME g_lastIniWrite{};
+
+bool key_down(int vk) {
+    return vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+int parse_ini_int(const wchar_t* section, const wchar_t* key, int fallback) {
+    wchar_t buffer[64]{};
+    wchar_t fallbackText[64]{};
+    _snwprintf_s(fallbackText, _countof(fallbackText), _TRUNCATE, L"%d", fallback);
+    GetPrivateProfileStringW(section, key, fallbackText, buffer, _countof(buffer), g_iniPath.c_str());
+
+    wchar_t* end = nullptr;
+    const long value = wcstol(buffer, &end, 0);
+    return (end && end != buffer) ? static_cast<int>(value) : fallback;
+}
+
+double parse_ini_double(const wchar_t* section, const wchar_t* key, double fallback) {
+    wchar_t buffer[64]{};
+    wchar_t fallbackText[64]{};
+    _snwprintf_s(fallbackText, _countof(fallbackText), _TRUNCATE, L"%.4f", fallback);
+    GetPrivateProfileStringW(section, key, fallbackText, buffer, _countof(buffer), g_iniPath.c_str());
+
+    wchar_t* end = nullptr;
+    const double value = wcstod(buffer, &end);
+    return (end && end != buffer) ? value : fallback;
+}
+
+bool parse_ini_bool(const wchar_t* section, const wchar_t* key, bool fallback) {
+    return parse_ini_int(section, key, fallback ? 1 : 0) != 0;
+}
+
+void log_line(const std::wstring& text) {
+    if (g_logPath.empty()) return;
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+
+    std::wofstream out(g_logPath, std::ios::app);
+    if (!out) return;
+
+    out << L"["
+        << st.wYear << L"-"
+        << (st.wMonth < 10 ? L"0" : L"") << st.wMonth << L"-"
+        << (st.wDay < 10 ? L"0" : L"") << st.wDay << L" "
+        << (st.wHour < 10 ? L"0" : L"") << st.wHour << L":"
+        << (st.wMinute < 10 ? L"0" : L"") << st.wMinute << L":"
+        << (st.wSecond < 10 ? L"0" : L"") << st.wSecond
+        << L"] " << text << L"\n";
+}
 
 std::filesystem::path module_directory() {
     wchar_t buffer[32768]{};
-    const DWORD size = GetModuleFileNameW(g_module, buffer, static_cast<DWORD>(std::size(buffer)));
-    if (size == 0 || size >= std::size(buffer)) {
-        return {};
-    }
+    const DWORD size = GetModuleFileNameW(g_module, buffer, static_cast<DWORD>(_countof(buffer)));
+    if (size == 0 || size >= _countof(buffer)) return {};
     return std::filesystem::path(std::wstring(buffer, size)).parent_path();
 }
 
-void log_line(const wchar_t* text) {
-    const auto dir = module_directory();
-    if (dir.empty()) return;
+void set_ui_status(const std::wstring& status) {
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.status = status;
+    }
+    if (g_promptWindow) InvalidateRect(g_promptWindow, nullptr, TRUE);
+}
 
-    std::wofstream out(dir / L"TSRealDriver.log", std::ios::app);
-    if (out) {
-        out << text << L"\n";
+bool query_write_time(const std::filesystem::path& path, FILETIME& out) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return false;
+    out = data.ftLastWriteTime;
+    return true;
+}
+
+void load_settings() {
+    if (g_iniPath.empty()) return;
+
+    g_settings.toggleKey = parse_ini_int(L"keys", L"toggle", VK_F10);
+    g_settings.interactKey = parse_ini_int(L"keys", L"interact", 'F');
+    g_settings.forwardKey = parse_ini_int(L"keys", L"forward", 'W');
+    g_settings.backwardKey = parse_ini_int(L"keys", L"back", 'S');
+    g_settings.leftKey = parse_ini_int(L"keys", L"left", 'A');
+    g_settings.rightKey = parse_ini_int(L"keys", L"right", 'D');
+    g_settings.sprintKey = parse_ini_int(L"keys", L"sprint", VK_SHIFT);
+    g_settings.crouchKey = parse_ini_int(L"keys", L"crouch", VK_CONTROL);
+    g_settings.jumpKey = parse_ini_int(L"keys", L"jump", VK_SPACE);
+    g_settings.eyeDownKey = parse_ini_int(L"keys", L"eye_down", 'Q');
+    g_settings.eyeUpKey = parse_ini_int(L"keys", L"eye_up", 'E');
+    g_settings.eyeResetKey = parse_ini_int(L"keys", L"eye_reset", 'R');
+    g_settings.buildingKey = parse_ini_int(L"keys", L"building", VK_F8);
+    g_settings.flashlightKey = parse_ini_int(L"keys", L"flashlight", VK_RBUTTON);
+    g_settings.flashlightSizeKey = parse_ini_int(L"keys", L"flashlight_size", 'G');
+    g_settings.fuelModeKey = parse_ini_int(L"keys", L"fuel_mode", VK_F7);
+    g_settings.consoleKey = parse_ini_int(L"keys", L"console", VK_OEM_3);
+
+    g_settings.walkSpeed = parse_ini_double(L"movement", L"walk_speed", 1.75);
+    g_settings.sprintMultiplier = parse_ini_double(L"movement", L"sprint_multiplier", 2.60);
+    g_settings.crouchDropSeconds = parse_ini_double(L"movement", L"crouch_drop_seconds", 0.16);
+    g_settings.jumpUpSeconds = parse_ini_double(L"movement", L"jump_up_seconds", 0.12);
+    g_settings.jumpHangSeconds = parse_ini_double(L"movement", L"jump_hang_seconds", 0.12);
+    g_settings.jumpDownSeconds = parse_ini_double(L"movement", L"jump_down_seconds", 0.16);
+
+    g_settings.prompts = parse_ini_bool(L"movement", L"show_prompts", true);
+    g_settings.flashlightEnabled = parse_ini_bool(L"flashlight", L"enabled", true);
+    g_settings.fuelEnabled = parse_ini_bool(L"fuel", L"enabled", true);
+    g_settings.debugCameraBridge = parse_ini_bool(L"camera", L"debug_camera_bridge", true);
+    g_settings.autoDoorOffset = parse_ini_bool(L"camera", L"auto_door_offset", true);
+    g_settings.sprintWheelNotches = parse_ini_int(L"camera", L"sprint_wheel_notches", 3);
+
+    QueryWriteTime(g_iniPath.c_str(), &g_lastIniWrite);
+    log_line(L"Configuration loaded.");
+}
+
+void reload_settings_if_changed() {
+    FILETIME current{};
+    if (!query_write_time(g_iniPath, current)) return;
+
+    if (CompareFileTime(&current, &g_lastIniWrite) != 0) {
+        load_settings();
+        g_lastIniWrite = current;
+        set_ui_status(L"CONFIG RELOADED");
     }
 }
+
+void send_key(int vk, bool down) {
+    INPUT input{};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = static_cast<WORD>(vk);
+    input.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+    SendInput(1, &input, sizeof(INPUT));
 }
+
+void tap_key(int vk) {
+    send_key(vk, true);
+    std::this_thread::sleep_for(8ms);
+    send_key(vk, false);
+}
+
+void hold_key_for(int vk, std::chrono::milliseconds duration) {
+    send_key(vk, true);
+    std::this_thread::sleep_for(duration);
+    send_key(vk, false);
+}
+
+void send_wheel(int notches) {
+    if (notches == 0) return;
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+    input.mi.mouseData = static_cast<DWORD>(notches * WHEEL_DELTA);
+    SendInput(1, &input, sizeof(INPUT));
+}
+
+void launch_config_editor() {
+    if (!std::filesystem::exists(g_configExePath)) {
+        set_ui_status(L"CONFIG EXE NOT FOUND");
+        log_line(L"TSRealDriverConfig.exe not found next to the DLL.");
+        return;
+    }
+
+    std::wstring command = L"\"" + g_configExePath.wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    std::wstring mutableCommand = command;
+    if (CreateProcessW(
+            nullptr,
+            mutableCommand.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            0,
+            nullptr,
+            g_moduleDir.c_str(),
+            &si,
+            &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        set_ui_status(L"CONFIG OPENED");
+    } else {
+        set_ui_status(L"CONFIG LAUNCH FAILED");
+        log_line(L"Could not launch TSRealDriverConfig.exe.");
+    }
+}
+
+void draw_text(HDC dc, int x, int y, const wchar_t* text, int size, COLORREF color, bool bold = false) {
+    LOGFONTW lf{};
+    lf.lfHeight = -MulDiv(size, GetDeviceCaps(dc, LOGPIXELSY), 72);
+    lf.lfWeight = bold ? FW_BOLD : FW_NORMAL;
+    wcscpy_s(lf.lfFaceName, L"Segoe UI");
+
+    HFONT font = CreateFontIndirectW(&lf);
+    HFONT old = static_cast<HFONT>(SelectObject(dc, font));
+    SetTextColor(dc, color);
+    SetBkMode(dc, TRANSPARENT);
+    TextOutW(dc, x, y, text, static_cast<int>(wcslen(text)));
+    SelectObject(dc, old);
+    DeleteObject(font);
+}
+
+LRESULT CALLBACK PromptWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+
+        HBRUSH clearBrush = CreateSolidBrush(RGB(1, 2, 3));
+        FillRect(dc, &ps.rcPaint, clearBrush);
+        DeleteObject(clearBrush);
+
+        UiState state;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            state = g_ui;
+        }
+
+        const COLORREF gold = RGB(225, 184, 86);
+        const COLORREF white = RGB(242, 242, 244);
+        const COLORREF gray = RGB(175, 177, 185);
+
+        draw_text(dc, 18, 12, L"TS REAL DRIVER", 16, gold, true);
+        draw_text(dc, 18, 42, state.status.c_str(), 11, white, true);
+
+        if (state.walking) {
+            std::wstring line = L"WASD walk  |  Shift run  |  Space jump  |  F enter cab  |  Ctrl+F10 settings";
+            draw_text(dc, 18, 68, line.c_str(), 9, gray, false);
+
+            std::wstring line2 = L"Right click flashlight  |  G beam size  |  F7 fuel roleplay";
+            draw_text(dc, 18, 92, line2.c_str(), 9, gray, false);
+
+            if (state.paused) {
+                draw_text(dc, 18, 118, L"WALK INPUT PAUSED (console mode)", 9, gold, true);
+            }
+
+            if (state.fuelStage > 0) {
+                RECT card{360, 116, 590, 195};
+                HBRUSH cardBrush = CreateSolidBrush(RGB(31, 34, 42));
+                FillRect(dc, &card, cardBrush);
+                DeleteObject(cardBrush);
+
+                HPEN pen = CreatePen(PS_SOLID, 2, gold);
+                HGDIOBJ oldPen = SelectObject(dc, pen);
+                HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                Rectangle(dc, card.left, card.top, card.right, card.bottom);
+                SelectObject(dc, oldBrush);
+                SelectObject(dc, oldPen);
+                DeleteObject(pen);
+
+                draw_text(dc, 374, 126, L"TS FLEET", 13, gold, true);
+
+                const wchar_t* fuelText = L"CARD READY - F";
+                if (state.fuelStage == 2) fuelText = L"NOZZLE READY - HOLD F";
+                if (state.fuelStage == 3) fuelText = L"FUELING...";
+                if (state.fuelStage == 4) fuelText = L"RECEIPT READY - F";
+                draw_text(dc, 374, 154, fuelText, 9, white, false);
+            }
+        }
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+LRESULT CALLBACK FlashlightWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+
+        RECT client{};
+        GetClientRect(hwnd, &client);
+
+        HBRUSH clearBrush = CreateSolidBrush(RGB(255, 0, 255));
+        FillRect(dc, &client, clearBrush);
+        DeleteObject(clearBrush);
+
+        UiState state;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            state = g_ui;
+        }
+
+        const int cx = (client.right - client.left) / 2;
+        const int cy = (client.bottom - client.top) / 2;
+        const int scale = state.flashlightSize;
+        const int width = 360 + scale * 130;
+        const int height = 240 + scale * 90;
+
+        HBRUSH outer = CreateSolidBrush(RGB(255, 245, 205));
+        HPEN none = CreatePen(PS_NULL, 0, RGB(0, 0, 0));
+        HGDIOBJ oldBrush = SelectObject(dc, outer);
+        HGDIOBJ oldPen = SelectObject(dc, none);
+        Ellipse(dc, cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(none);
+        DeleteObject(outer);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+void create_overlay_windows() {
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+
+    WNDCLASSW promptClass{};
+    promptClass.lpfnWndProc = PromptWindowProc;
+    promptClass.hInstance = instance;
+    promptClass.lpszClassName = L"TSRealDriverPromptOverlay";
+    promptClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassW(&promptClass);
+
+    WNDCLASSW flashClass{};
+    flashClass.lpfnWndProc = FlashlightWindowProc;
+    flashClass.hInstance = instance;
+    flashClass.lpszClassName = L"TSRealDriverFlashOverlay";
+    flashClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassW(&flashClass);
+
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    const int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+    g_flashlightWindow = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"TSRealDriverFlashOverlay",
+        L"",
+        WS_POPUP,
+        0, 0, screenW, screenH,
+        nullptr, nullptr, instance, nullptr);
+
+    if (g_flashlightWindow) {
+        SetLayeredWindowAttributes(g_flashlightWindow, RGB(255, 0, 255), 52, LWA_COLORKEY | LWA_ALPHA);
+        ShowWindow(g_flashlightWindow, SW_HIDE);
+    }
+
+    g_promptWindow = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"TSRealDriverPromptOverlay",
+        L"",
+        WS_POPUP,
+        24, screenH - 245, 620, 205,
+        nullptr, nullptr, instance, nullptr);
+
+    if (g_promptWindow) {
+        SetLayeredWindowAttributes(g_promptWindow, RGB(1, 2, 3), 255, LWA_COLORKEY | LWA_ALPHA);
+        ShowWindow(g_promptWindow, g_settings.prompts ? SW_SHOWNOACTIVATE : SW_HIDE);
+        InvalidateRect(g_promptWindow, nullptr, TRUE);
+    }
+}
+
+void destroy_overlay_windows() {
+    if (g_flashlightWindow) {
+        DestroyWindow(g_flashlightWindow);
+        g_flashlightWindow = nullptr;
+    }
+    if (g_promptWindow) {
+        DestroyWindow(g_promptWindow);
+        g_promptWindow = nullptr;
+    }
+}
+
+void pump_messages() {
+    MSG msg{};
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+struct Edge {
+    bool previous = false;
+
+    bool pressed(bool now) {
+        const bool result = now && !previous;
+        previous = now;
+        return result;
+    }
+};
+
+bool g_sentForward = false;
+bool g_sentBackward = false;
+bool g_sentLeft = false;
+bool g_sentRight = false;
+bool g_sentEyeUp = false;
+bool g_sentEyeDown = false;
+
+void mirror_key(int source, int target, bool& state) {
+    const bool down = key_down(source);
+    if (down == state) return;
+    send_key(target, down);
+    state = down;
+}
+
+void release_walk_keys() {
+    if (g_sentForward) send_key(VK_NUMPAD8, false);
+    if (g_sentBackward) send_key(VK_NUMPAD5, false);
+    if (g_sentLeft) send_key(VK_NUMPAD4, false);
+    if (g_sentRight) send_key(VK_NUMPAD6, false);
+    if (g_sentEyeUp) send_key(VK_NUMPAD9, false);
+    if (g_sentEyeDown) send_key(VK_NUMPAD3, false);
+
+    g_sentForward = false;
+    g_sentBackward = false;
+    g_sentLeft = false;
+    g_sentRight = false;
+    g_sentEyeUp = false;
+    g_sentEyeDown = false;
+}
+
+void update_overlay_visibility() {
+    UiState state;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        state = g_ui;
+    }
+
+    if (g_promptWindow) {
+        ShowWindow(g_promptWindow, g_settings.prompts ? SW_SHOWNOACTIVATE : SW_HIDE);
+        InvalidateRect(g_promptWindow, nullptr, TRUE);
+    }
+
+    if (g_flashlightWindow) {
+        const bool show = state.walking && state.flashlight && g_settings.flashlightEnabled;
+        ShowWindow(g_flashlightWindow, show ? SW_SHOWNOACTIVATE : SW_HIDE);
+        if (show) InvalidateRect(g_flashlightWindow, nullptr, TRUE);
+    }
+}
+
+void enter_walk_mode() {
+    if (!g_settings.debugCameraBridge) {
+        set_ui_status(L"DEBUG CAMERA BRIDGE DISABLED");
+        return;
+    }
+
+    // ETS2/ATS developer camera is normally opened with the top-row 0 key.
+    tap_key('0');
+    std::this_thread::sleep_for(220ms);
+
+    if (g_settings.autoDoorOffset) {
+        // Small camera-zero offset from the driver's eye toward the door.
+        // It is intentionally configurable and does not patch game memory.
+        hold_key_for(VK_NUMPAD4, 180ms);
+        hold_key_for(VK_NUMPAD5, 70ms);
+        hold_key_for(VK_NUMPAD3, 80ms);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.walking = true;
+        g_ui.paused = false;
+        g_ui.fuelStage = 0;
+        g_ui.fueling = false;
+        g_ui.status = L"WALK MODE";
+    }
+    update_overlay_visibility();
+    log_line(L"Walk mode enabled.");
+}
+
+void leave_walk_mode() {
+    release_walk_keys();
+    send_key(VK_RETURN, false);
+
+    bool flashlightWasOn = false;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        flashlightWasOn = g_ui.flashlight;
+        g_ui.walking = false;
+        g_ui.paused = false;
+        g_ui.fueling = false;
+        g_ui.fuelStage = 0;
+        g_ui.status = L"IN CAB";
+    }
+
+    tap_key('0');
+
+    if (flashlightWasOn) {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.flashlight = false;
+    }
+
+    update_overlay_visibility();
+    log_line(L"Walk mode disabled.");
+}
+
+void do_jump() {
+    set_ui_status(L"JUMP");
+    send_key(VK_NUMPAD9, true);
+    std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::duration<double>(g_settings.jumpUpSeconds)));
+    send_key(VK_NUMPAD9, false);
+
+    std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::duration<double>(g_settings.jumpHangSeconds)));
+
+    send_key(VK_NUMPAD3, true);
+    std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::duration<double>(g_settings.jumpDownSeconds)));
+    send_key(VK_NUMPAD3, false);
+
+    set_ui_status(L"WALK MODE");
+}
+
+void begin_fuel_roleplay() {
+    if (!g_settings.fuelEnabled) {
+        set_ui_status(L"FUEL ROLEPLAY DISABLED");
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    if (g_ui.fuelStage == 0) {
+        g_ui.fuelStage = 1;
+        g_ui.status = L"FUEL: PRESENT TS FLEET CARD";
+    } else {
+        g_ui.fuelStage = 0;
+        g_ui.fueling = false;
+        g_ui.status = L"WALK MODE";
+        send_key(VK_RETURN, false);
+    }
+    if (g_promptWindow) InvalidateRect(g_promptWindow, nullptr, TRUE);
+}
+
+void handle_fuel_interaction(bool interactNow, bool interactPressed) {
+    int stage = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        stage = g_ui.fuelStage;
+    }
+
+    if (stage == 0) return;
+
+    if (stage == 1 && interactPressed) {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.fuelStage = 2;
+        g_ui.status = L"FUEL: TAKE NOZZLE / HOLD F AT TANK";
+        InvalidateRect(g_promptWindow, nullptr, TRUE);
+        return;
+    }
+
+    if (stage == 2 && interactNow) {
+        send_key(VK_RETURN, true);
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.fuelStage = 3;
+        g_ui.fueling = true;
+        g_ui.status = L"FUELING - F IS HOLDING GAME ENTER";
+        InvalidateRect(g_promptWindow, nullptr, TRUE);
+        return;
+    }
+
+    if (stage == 3 && !interactNow) {
+        send_key(VK_RETURN, false);
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.fuelStage = 4;
+        g_ui.fueling = false;
+        g_ui.status = L"FUEL: HANG NOZZLE / TAKE RECEIPT";
+        InvalidateRect(g_promptWindow, nullptr, TRUE);
+        return;
+    }
+
+    if (stage == 4 && interactPressed) {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.fuelStage = 0;
+        g_ui.status = L"WALK MODE";
+        InvalidateRect(g_promptWindow, nullptr, TRUE);
+    }
+}
+
+void worker_main() {
+    load_settings();
+    create_overlay_windows();
+
+    Edge f10Edge;
+    Edge interactEdge;
+    Edge sprintEdge;
+    Edge jumpEdge;
+    Edge crouchEdge;
+    Edge flashEdge;
+    Edge flashSizeEdge;
+    Edge fuelEdge;
+    Edge buildingEdge;
+    Edge consoleEdge;
+    Edge resetEyeEdge;
+
+    auto lastReloadCheck = Clock::now();
+
+    while (!g_stop.load()) {
+        pump_messages();
+
+        const bool walking = [&] {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            return g_ui.walking;
+        }();
+
+        const bool f10Now = key_down(g_settings.toggleKey);
+        const bool ctrlNow = key_down(VK_CONTROL);
+
+        if (f10Edge.pressed(f10Now)) {
+            if (ctrlNow) {
+                launch_config_editor();
+            } else if (walking) {
+                leave_walk_mode();
+            } else {
+                enter_walk_mode();
+            }
+        }
+
+        const bool consoleNow = key_down(g_settings.consoleKey);
+        if (consoleEdge.pressed(consoleNow) && walking) {
+            bool paused = false;
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_ui.paused = !g_ui.paused;
+                paused = g_ui.paused;
+                g_ui.status = paused ? L"INPUT PAUSED FOR CONSOLE" : L"WALK MODE";
+            }
+            if (paused) release_walk_keys();
+            update_overlay_visibility();
+        }
+
+        bool paused = false;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            paused = g_ui.paused;
+        }
+
+        if (walking && !paused) {
+            mirror_key(g_settings.forwardKey, VK_NUMPAD8, g_sentForward);
+            mirror_key(g_settings.backwardKey, VK_NUMPAD5, g_sentBackward);
+            mirror_key(g_settings.leftKey, VK_NUMPAD4, g_sentLeft);
+            mirror_key(g_settings.rightKey, VK_NUMPAD6, g_sentRight);
+            mirror_key(g_settings.eyeUpKey, VK_NUMPAD9, g_sentEyeUp);
+            mirror_key(g_settings.eyeDownKey, VK_NUMPAD3, g_sentEyeDown);
+
+            const bool sprintNow = key_down(g_settings.sprintKey);
+            if (sprintEdge.pressed(sprintNow)) {
+                send_wheel(g_settings.sprintWheelNotches);
+                set_ui_status(L"RUN");
+            }
+            if (!sprintNow && sprintEdge.previous) {
+                // This branch is intentionally unreachable because Edge::pressed updates previous.
+                // Sprint release is handled below by a dedicated static state.
+            }
+
+            static bool sprintHeld = false;
+            if (sprintNow != sprintHeld) {
+                if (!sprintNow && sprintHeld) {
+                    send_wheel(-g_settings.sprintWheelNotches);
+                    set_ui_status(L"WALK MODE");
+                }
+                sprintHeld = sprintNow;
+            }
+
+            const bool crouchNow = key_down(g_settings.crouchKey);
+            if (crouchEdge.pressed(crouchNow)) {
+                send_key(VK_NUMPAD3, true);
+                std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::duration<double>(g_settings.crouchDropSeconds)));
+                send_key(VK_NUMPAD3, false);
+                set_ui_status(L"CROUCH");
+            }
+            static bool crouchHeld = false;
+            if (!crouchNow && crouchHeld) {
+                send_key(VK_NUMPAD9, true);
+                std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::duration<double>(g_settings.crouchDropSeconds)));
+                send_key(VK_NUMPAD9, false);
+                set_ui_status(L"WALK MODE");
+            }
+            crouchHeld = crouchNow;
+
+            const bool jumpNow = key_down(g_settings.jumpKey);
+            if (jumpEdge.pressed(jumpNow)) {
+                do_jump();
+            }
+
+            const bool resetEyeNow = key_down(g_settings.eyeResetKey);
+            if (resetEyeEdge.pressed(resetEyeNow)) {
+                // Conservative reset: a short raise after crouch/eye adjustments.
+                hold_key_for(VK_NUMPAD9, 120ms);
+                set_ui_status(L"EYE HEIGHT RESET");
+            }
+
+            const bool flashNow = key_down(g_settings.flashlightKey);
+            if (flashEdge.pressed(flashNow) && g_settings.flashlightEnabled) {
+                {
+                    std::lock_guard<std::mutex> lock(g_stateMutex);
+                    g_ui.flashlight = !g_ui.flashlight;
+                    g_ui.status = g_ui.flashlight ? L"FLASHLIGHT ON" : L"FLASHLIGHT OFF";
+                }
+                update_overlay_visibility();
+            }
+
+            const bool flashSizeNow = key_down(g_settings.flashlightSizeKey);
+            if (flashSizeEdge.pressed(flashSizeNow)) {
+                {
+                    std::lock_guard<std::mutex> lock(g_stateMutex);
+                    g_ui.flashlightSize = (g_ui.flashlightSize % 3) + 1;
+                    g_ui.status = L"FLASHLIGHT BEAM SIZE";
+                }
+                update_overlay_visibility();
+            }
+
+            const bool buildingNow = key_down(g_settings.buildingKey);
+            if (buildingEdge.pressed(buildingNow)) {
+                {
+                    std::lock_guard<std::mutex> lock(g_stateMutex);
+                    g_ui.buildingMode = !g_ui.buildingMode;
+                    g_ui.status = g_ui.buildingMode ? L"BUILDING / GHOST WALK" : L"WALK MODE";
+                }
+                update_overlay_visibility();
+            }
+
+            const bool fuelNow = key_down(g_settings.fuelModeKey);
+            if (fuelEdge.pressed(fuelNow)) {
+                begin_fuel_roleplay();
+            }
+
+            const bool interactNow = key_down(g_settings.interactKey);
+            const bool interactPressed = interactEdge.pressed(interactNow);
+
+            int fuelStage = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                fuelStage = g_ui.fuelStage;
+            }
+
+            if (fuelStage > 0) {
+                handle_fuel_interaction(interactNow, interactPressed);
+            } else if (interactPressed) {
+                leave_walk_mode();
+            }
+        } else {
+            release_walk_keys();
+        }
+
+        if (Clock::now() - lastReloadCheck > 1s) {
+            reload_settings_if_changed();
+            lastReloadCheck = Clock::now();
+        }
+
+        std::this_thread::sleep_for(8ms);
+    }
+
+    release_walk_keys();
+    send_key(VK_RETURN, false);
+    destroy_overlay_windows();
+}
+
+} // namespace
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -34,10 +844,25 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
 }
 
 extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void*) {
-    log_line(L"[TSRealDriver] plugin initialized");
+    if (g_worker.joinable()) return 0;
+
+    g_moduleDir = module_directory();
+    if (g_moduleDir.empty()) return 1;
+
+    g_iniPath = g_moduleDir / L"TSRealDriver.ini";
+    g_logPath = g_moduleDir / L"TSRealDriver.log";
+    g_configExePath = g_moduleDir / L"TSRealDriverConfig.exe";
+
+    g_stop = false;
+    g_worker = std::thread(worker_main);
+    log_line(L"TSRealDriver 0.2 initialized.");
     return 0;
 }
 
 extern "C" __declspec(dllexport) void scs_telemetry_shutdown() {
-    log_line(L"[TSRealDriver] plugin shutdown");
+    g_stop = true;
+    if (g_worker.joinable()) {
+        g_worker.join();
+    }
+    log_line(L"TSRealDriver shutdown.");
 }
