@@ -43,6 +43,8 @@ struct Settings {
     int buildingKey = VK_F8;
     int flashlightKey = VK_RBUTTON;
     int flashlightSizeKey = 'G';
+    int speedResetKey = VK_MBUTTON;
+    int zoomKey = VK_LBUTTON;
     int fuelModeKey = VK_F7;
     int consoleKey = VK_OEM_3;
 
@@ -242,6 +244,8 @@ void load_settings() {
     g_settings.buildingKey = parse_ini_int(L"keys", L"building", VK_F8);
     g_settings.flashlightKey = parse_ini_int(L"keys", L"flashlight", VK_RBUTTON);
     g_settings.flashlightSizeKey = parse_ini_int(L"keys", L"flashlight_size", 'G');
+    g_settings.speedResetKey = parse_ini_int(L"keys", L"speed_reset", VK_MBUTTON);
+    g_settings.zoomKey = parse_ini_int(L"keys", L"zoom", VK_LBUTTON);
     g_settings.fuelModeKey = parse_ini_int(L"keys", L"fuel_mode", VK_F7);
     g_settings.consoleKey = parse_ini_int(L"keys", L"console", VK_OEM_3);
 
@@ -1427,6 +1431,7 @@ void worker_main() {
     Edge buildingEdge;
     Edge consoleEdge;
     Edge resetEyeEdge;
+    Edge speedResetEdge;
 
     auto lastReloadCheck = Clock::now();
     auto nextTelemetry = Clock::now();
@@ -1436,6 +1441,7 @@ void worker_main() {
     auto lastFrame = Clock::now();
     Clock::time_point sprintStarted{};
     int bobPhase = 1;
+    int manualSpeedOffset = 0;
     bool lastTrailerAttached = g_gameState.trailerAttached;
 
     while (!g_stop.load()) {
@@ -1509,7 +1515,15 @@ void worker_main() {
 
             const int manualWheel = g_mouseWheel.exchange(0);
             if (manualWheel != 0) {
+                manualSpeedOffset += manualWheel;
                 set_ui_status(manualWheel > 0 ? L"WALK SPEED +" : L"WALK SPEED -");
+            }
+
+            const bool speedResetNow = key_down(g_settings.speedResetKey);
+            if (speedResetEdge.pressed(speedResetNow) && manualSpeedOffset != 0) {
+                send_wheel(-manualSpeedOffset);
+                manualSpeedOffset = 0;
+                set_ui_status(L"WALK SPEED RESET");
             }
 
             const bool sprintNow = key_down(g_settings.sprintKey);
