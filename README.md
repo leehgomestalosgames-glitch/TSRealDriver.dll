@@ -2,16 +2,19 @@
 
 Independent ETS2/ATS driver-walking plug-in for the TSMS ecosystem.
 
-## TSRealDriver 0.4.1 — Cabin / Audio Hotfix
+## TSRealDriver 0.4.2 — Camera Stabilization
 
-This hotfix addresses the first in-game ATS test.
+This build addresses the first recorded in-game ATS walk test.
 
-- Developer/free camera toggle now uses **Numpad 0** instead of the top-row 0 key.
-- Walking reverse remains mapped to Numpad 2.
-- Prototype 8 kHz synthetic footsteps were replaced by regenerated 44.1 kHz, lower-volume multi-component footsteps with left/right variation.
-- Other generated interaction sounds were also regenerated at 44.1 kHz.
+- Forces the normal interior camera before entering developer/free camera.
+- Uses **Numpad 0** to activate the developer/free camera.
+- Corrects free-camera reverse to **Numpad 5**.
+- Controls `g_flyspeed` while the screen is faded so the timed door offset no longer launches the camera several metres away at the game's default fly speed.
+- Uses a controlled spawn speed, then switches to a walking-speed free camera and restores the configured free-camera speed when returning to the cab.
+- Reduces the generated footstep level further while the audio replacement work continues.
+- Keeps the 44.1 kHz regenerated interaction audio from 0.4.1.
 
-This build is intended to be installed and tested as one coherent package before we continue the TSMS integration work.
+This build is intended to make the driver spawn just outside the cab instead of appearing high above, below, or far away from the truck.
 
 ### Runtime
 
