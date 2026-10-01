@@ -16,6 +16,7 @@
 #include <mmsystem.h>
 
 #include "native_game_bridge.hpp"
+#include "game_camera_bridge.hpp"
 #include "tsms_telemetry_bridge.hpp"
 
 namespace {
@@ -144,6 +145,7 @@ double g_walkerY = 0.0;
 double g_walkerZ = 0.0;
 double g_walkerYaw = 0.0;
 bool g_walkerPositionValid = false;
+int g_previousCameraSlot = -1;
 
 HHOOK g_mouseHook = nullptr;
 HHOOK g_keyboardHook = nullptr;
@@ -1378,28 +1380,34 @@ void enter_walk_mode() {
 
     transition_fade(true);
 
-    // Start from the normal interior camera so the developer camera does not
-    // resume from an old aerial/free-camera position.
-    tap_key('1');
-    std::this_thread::sleep_for(120ms);
+    // Request the game's debug camera through the native camera manager.
+    // This is separate from the player's own Numpad-0 free-camera toggle.
+    game_camera_bridge_refresh();
+    g_previousCameraSlot = game_camera_bridge_current_slot();
 
-    log_line(L"Walk enter: toggling developer camera with NUMPAD0.");
-    tap_key(VK_NUMPAD0);
-    std::this_thread::sleep_for(260ms);
+    log_line(game_camera_bridge_report());
 
-    // ATS/ETS2 defaults g_flyspeed around 100, which makes timed door offsets
-    // launch the camera many metres away. Use a controlled spawn speed first.
-    set_game_flyspeed(g_settings.spawnFlySpeed);
-
-    if (g_settings.autoDoorOffset) {
-        // From the driver's eye: left toward the door, slightly rearward, then
-        // down toward standing eye height outside the cab.
-        hold_key_for(VK_NUMPAD4, 360ms);
-        hold_key_for(VK_NUMPAD5, 90ms);
-        hold_key_for(VK_NUMPAD3, 230ms);
+    if (!game_camera_bridge_request_debug(1200)) {
+        log_line(std::wstring(L"Walk enter failed: ") + game_camera_bridge_status().error);
+        transition_fade(false);
+        set_ui_status(L"NATIVE WALK CAMERA NOT READY");
+        return;
     }
 
-    set_game_flyspeed(g_settings.walkFlySpeed);
+    log_line(L"Walk enter: native debug camera requested successfully.");
+
+    // Temporary door placement bridge: once the debug camera is active, use a
+    // slow free-camera movement pulse to step out of the driver's side. The
+    // camera switch itself is now native; this pulse will be removed once the
+    // debug-camera pose fields are resolved for this build.
+    if (g_settings.autoDoorOffset) {
+        set_game_flyspeed(g_settings.spawnFlySpeed);
+        hold_key_for(VK_NUMPAD4, 300ms);
+        hold_key_for(VK_NUMPAD2, 90ms);
+        hold_key_for(VK_NUMPAD3, 180ms);
+        set_game_flyspeed(g_settings.walkFlySpeed);
+    }
+
     initialize_walker_world_position();
 
     {
@@ -1435,8 +1443,17 @@ void leave_walk_mode() {
 
     transition_fade(true);
     set_game_flyspeed(g_settings.restoreFlySpeed);
-    log_line(L"Walk leave: returning from developer camera with NUMPAD0.");
-    tap_key(VK_NUMPAD0);
+
+    if (g_previousCameraSlot >= 0) {
+        if (game_camera_bridge_request_slot(g_previousCameraSlot, 1200)) {
+            log_line(L"Walk leave: restored the previous game camera slot.");
+        } else {
+            log_line(std::wstring(L"Walk leave: could not restore previous camera slot: ") +
+                     game_camera_bridge_status().error);
+        }
+    } else {
+        log_line(L"Walk leave: previous camera slot was not known.");
+    }
 
     if (flashlightWasOn) {
         std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -1630,7 +1647,7 @@ void worker_main() {
 
             // The game's developer/free-camera movement axes.
             mirror_key(g_settings.forwardKey, VK_NUMPAD8, g_sentForward);
-            mirror_key(g_settings.backwardKey, VK_NUMPAD5, g_sentBackward);
+            mirror_key(g_settings.backwardKey, VK_NUMPAD2, g_sentBackward);
             mirror_key(g_settings.leftKey, VK_NUMPAD4, g_sentLeft);
             mirror_key(g_settings.rightKey, VK_NUMPAD6, g_sentRight);
             mirror_key(g_settings.eyeUpKey, VK_NUMPAD9, g_sentEyeUp);
@@ -1930,9 +1947,16 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
     native_game_bridge_initialize();
     log_line(native_game_bridge_report());
 
+    if (game_camera_bridge_resolve()) {
+        log_line(game_camera_bridge_report());
+    } else {
+        log_line(std::wstring(L"GameCameraBridge resolve failed: ") +
+                 game_camera_bridge_status().error);
+    }
+
     g_stop = false;
     g_worker = std::thread(worker_main);
-    log_line(L"TSRealDriver 0.4.2 initialized.");
+    log_line(L"TSRealDriver 0.5 initialized.");
     return 0;
 }
 
