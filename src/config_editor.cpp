@@ -136,11 +136,15 @@ Item toggle(const wchar_t* label, const wchar_t* section, const wchar_t* key, bo
     return i;
 }
 
-Item key_item(const wchar_t* label, const wchar_t* key, int vk) {
+Item section_key_item(const wchar_t* label, const wchar_t* section, const wchar_t* key, int vk) {
     Item i;
-    i.label = label; i.section = L"keys"; i.key = key; i.type = ItemType::Key;
+    i.label = label; i.section = section; i.key = key; i.type = ItemType::Key;
     i.value = static_cast<double>(vk); i.minValue = 0; i.maxValue = 255; i.step = 1;
     return i;
+}
+
+Item key_item(const wchar_t* label, const wchar_t* key, int vk) {
+    return section_key_item(label, L"keys", key, vk);
 }
 
 void build_tabs() {
@@ -247,7 +251,7 @@ void build_tabs() {
         toggle(L"Couple as lock / hoses / landing gear", L"trailer", L"couple_steps", true),
         toggle(L"Require tug-test workflow", L"trailer", L"tug_test", true),
         slider(L"Fifth-wheel interaction reach (m)", L"trailer", L"radius", 2.5, 0.5, 5.0, 0.1),
-        key_item(L"Game trailer attach / detach key", L"attach_key", 'T'),
+        section_key_item(L"Game trailer attach / detach key", L"trailer", L"attach_key", 'T'),
     }});
 
     g_tabs.push_back({L"KEYS", {
