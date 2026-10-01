@@ -269,6 +269,8 @@ void build_tabs() {
         key_item(L"Reset eye height", L"eye_reset", 'R'),
         key_item(L"Interact / enter cabin", L"interact", 'F'),
         key_item(L"Building / ghost walk", L"building", VK_F8),
+        key_item(L"Zoom (hold)", L"zoom", VK_LBUTTON),
+        key_item(L"Reset walking speed", L"speed_reset", VK_MBUTTON),
         key_item(L"Flashlight on / off", L"flashlight", VK_RBUTTON),
         key_item(L"Change beam size", L"flashlight_size", 'G'),
         key_item(L"Fuel roleplay", L"fuel_mode", VK_F7),
