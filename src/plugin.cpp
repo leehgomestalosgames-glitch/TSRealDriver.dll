@@ -47,6 +47,8 @@ struct Settings {
 
     double walkSpeed = 1.75;
     double sprintMultiplier = 2.60;
+    double backwardFactor = 0.70;
+    double strafeFactor = 0.90;
     double crouchDropSeconds = 0.16;
     double jumpUpSeconds = 0.12;
     double jumpHangSeconds = 0.12;
@@ -119,6 +121,7 @@ std::filesystem::path g_iniPath;
 std::filesystem::path g_logPath;
 std::filesystem::path g_configExePath;
 std::filesystem::path g_audioDir;
+std::filesystem::path g_tanksPath;
 
 HWND g_promptWindow = nullptr;
 HWND g_flashlightWindow = nullptr;
@@ -236,6 +239,8 @@ void load_settings() {
 
     g_settings.walkSpeed = parse_ini_double(L"movement", L"walk_speed", 1.75);
     g_settings.sprintMultiplier = parse_ini_double(L"movement", L"sprint_multiplier", 2.60);
+    g_settings.backwardFactor = parse_ini_double(L"movement", L"backward_factor", 0.70);
+    g_settings.strafeFactor = parse_ini_double(L"movement", L"strafe_factor", 0.90);
     g_settings.crouchDropSeconds = parse_ini_double(L"movement", L"crouch_drop_seconds", 0.16);
     g_settings.jumpUpSeconds = parse_ini_double(L"movement", L"jump_up_seconds", 0.12);
     g_settings.jumpHangSeconds = parse_ini_double(L"movement", L"jump_hang_seconds", 0.12);
@@ -425,6 +430,378 @@ void mouse_nudge(LONG dx, LONG dy) {
     input.mi.dy = dy;
     input.mi.dwFlags = MOUSEEVENTF_MOVE;
     SendInput(1, &input, sizeof(INPUT));
+}
+
+
+LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION) {
+        const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+        if (info) {
+            if (!g_haveMousePoint) {
+                g_lastMousePoint = info->pt;
+                g_haveMousePoint = true;
+            } else if (wParam == WM_MOUSEMOVE) {
+                g_mouseDx.fetch_add(info->pt.x - g_lastMousePoint.x);
+                g_mouseDy.fetch_add(info->pt.y - g_lastMousePoint.y);
+                g_lastMousePoint = info->pt;
+            }
+
+            if (wParam == WM_MOUSEWHEEL) {
+                const short delta = GET_WHEEL_DELTA_WPARAM(info->mouseData);
+                if (delta != 0) g_mouseWheel.fetch_add(delta / WHEEL_DELTA);
+            }
+        }
+    }
+    return CallNextHookEx(g_mouseHook, code, wParam, lParam);
+}
+
+void install_mouse_hook() {
+    if (g_mouseHook) return;
+    g_haveMousePoint = false;
+    g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, g_module, 0);
+    log_line(g_mouseHook ? L"Low-level mouse bridge online." : L"Low-level mouse bridge unavailable.");
+}
+
+void uninstall_mouse_hook() {
+    if (g_mouseHook) {
+        UnhookWindowsHookEx(g_mouseHook);
+        g_mouseHook = nullptr;
+    }
+    g_haveMousePoint = false;
+}
+
+std::wstring widen_ascii(const std::string& input) {
+    if (input.empty()) return L"unknown";
+    int needed = MultiByteToWideChar(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), nullptr, 0);
+    if (needed <= 0) return L"unknown";
+    std::wstring out(static_cast<std::size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), out.data(), needed);
+
+    for (auto& ch : out) {
+        if (!(std::iswalnum(ch) || ch == L'_' || ch == L'-')) ch = L'_';
+    }
+    return out;
+}
+
+struct WorldPoint {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+};
+
+double game_heading_radians() {
+    return g_gameState.heading * 6.28318530717958647692;
+}
+
+WorldPoint truck_local_to_world(double localX, double localY, double localZ) {
+    const double a = game_heading_radians();
+    const double ca = std::cos(a);
+    const double sa = std::sin(a);
+
+    // Horizontal transform. SCS world heading is normalized turns.
+    WorldPoint p;
+    p.x = g_gameState.worldX + localX * ca + localZ * sa;
+    p.y = g_gameState.worldY + localY;
+    p.z = g_gameState.worldZ - localX * sa + localZ * ca;
+    return p;
+}
+
+void world_to_truck_local(double worldX, double worldZ, double& localX, double& localZ) {
+    const double dx = worldX - g_gameState.worldX;
+    const double dz = worldZ - g_gameState.worldZ;
+    const double a = game_heading_radians();
+    const double ca = std::cos(a);
+    const double sa = std::sin(a);
+
+    localX = dx * ca - dz * sa;
+    localZ = dx * sa + dz * ca;
+}
+
+double distance_xz(double ax, double az, double bx, double bz) {
+    const double dx = ax - bx;
+    const double dz = az - bz;
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+WorldPoint door_point() {
+    // Driver side default: negative local X from the cab/head reference.
+    const double seatX = static_cast<double>(g_gameState.cabinLocalX + g_gameState.headLocalX);
+    const double seatY = static_cast<double>(g_gameState.cabinLocalY + g_gameState.headLocalY);
+    const double seatZ = static_cast<double>(g_gameState.cabinLocalZ + g_gameState.headLocalZ);
+    return truck_local_to_world(seatX - g_settings.doorOutward, seatY, seatZ);
+}
+
+WorldPoint pump_point() {
+    return truck_local_to_world(-g_settings.pumpOut, 0.0, -g_settings.pumpBack);
+}
+
+bool load_learned_tank(double& localX, double& localZ) {
+    if (!g_settings.rememberTank || g_tanksPath.empty() || g_gameState.truckId.empty()) return false;
+
+    const std::wstring section = widen_ascii(g_gameState.truckId);
+    wchar_t bx[64]{};
+    wchar_t bz[64]{};
+
+    GetPrivateProfileStringW(section.c_str(), L"local_x", L"", bx, _countof(bx), g_tanksPath.c_str());
+    GetPrivateProfileStringW(section.c_str(), L"local_z", L"", bz, _countof(bz), g_tanksPath.c_str());
+
+    if (bx[0] == 0 || bz[0] == 0) return false;
+
+    wchar_t* endX = nullptr;
+    wchar_t* endZ = nullptr;
+    const double x = wcstod(bx, &endX);
+    const double z = wcstod(bz, &endZ);
+    if (!endX || endX == bx || !endZ || endZ == bz) return false;
+
+    localX = x;
+    localZ = z;
+    return true;
+}
+
+void save_learned_tank(double localX, double localZ) {
+    if (!g_settings.rememberTank || g_tanksPath.empty() || g_gameState.truckId.empty()) return;
+
+    const std::wstring section = widen_ascii(g_gameState.truckId);
+    wchar_t bx[64]{};
+    wchar_t bz[64]{};
+    _snwprintf_s(bx, _countof(bx), _TRUNCATE, L"%.4f", localX);
+    _snwprintf_s(bz, _countof(bz), _TRUNCATE, L"%.4f", localZ);
+
+    WritePrivateProfileStringW(section.c_str(), L"local_x", bx, g_tanksPath.c_str());
+    WritePrivateProfileStringW(section.c_str(), L"local_z", bz, g_tanksPath.c_str());
+}
+
+WorldPoint tank_point() {
+    double localX = -g_settings.tankOut;
+    double localZ = -g_settings.tankBack;
+    load_learned_tank(localX, localZ);
+    return truck_local_to_world(localX, 0.0, localZ);
+}
+
+WorldPoint fifth_wheel_point() {
+    return truck_local_to_world(
+        static_cast<double>(g_gameState.hookLocalX),
+        static_cast<double>(g_gameState.hookLocalY),
+        static_cast<double>(g_gameState.hookLocalZ));
+}
+
+bool refresh_game_state() {
+    TsmsGameState next{};
+    const bool ok = tsms_bridge_read(next);
+    if (ok) {
+        g_gameState = next;
+        g_haveTelemetry = next.sdkActive;
+    } else {
+        g_haveTelemetry = false;
+    }
+    return g_haveTelemetry;
+}
+
+bool can_leave_cab(std::wstring& reason) {
+    if (!g_haveTelemetry) return true;
+
+    if (std::abs(g_gameState.speedMps) > g_settings.exitSpeedThreshold) {
+        reason = L"STOP THE TRUCK FIRST";
+        return false;
+    }
+    if (!g_gameState.parkingBrake) {
+        reason = L"SET THE PARKING BRAKE FIRST";
+        return false;
+    }
+    return true;
+}
+
+void initialize_walker_world_position() {
+    if (!g_haveTelemetry) {
+        g_walkerPositionValid = false;
+        return;
+    }
+
+    const WorldPoint d = door_point();
+    g_walkerX = d.x;
+    g_walkerY = std::max(d.y, g_gameState.worldY + 0.2);
+    g_walkerZ = d.z;
+    g_walkerYaw = game_heading_radians();
+    g_walkerPositionValid = true;
+}
+
+void update_walker_world_estimate(double dt) {
+    if (!g_walkerPositionValid || dt <= 0.0) return;
+
+    const long mdx = g_mouseDx.exchange(0);
+    g_mouseDy.exchange(0);
+    g_walkerYaw += static_cast<double>(mdx) * g_settings.mouseLookScale;
+
+    while (g_walkerYaw > 3.14159265358979323846) g_walkerYaw -= 6.28318530717958647692;
+    while (g_walkerYaw < -3.14159265358979323846) g_walkerYaw += 6.28318530717958647692;
+
+    double forward = 0.0;
+    double right = 0.0;
+
+    if (key_down(g_settings.forwardKey)) forward += 1.0;
+    if (key_down(g_settings.backwardKey)) forward -= g_settings.backwardFactor;
+    if (key_down(g_settings.rightKey)) right += g_settings.strafeFactor;
+    if (key_down(g_settings.leftKey)) right -= g_settings.strafeFactor;
+
+    const double magnitude = std::sqrt(forward * forward + right * right);
+    if (magnitude > 1.0) {
+        forward /= magnitude;
+        right /= magnitude;
+    }
+
+    const double speed =
+        g_settings.walkSpeed *
+        (key_down(g_settings.sprintKey) ? std::max(1.0, g_settings.sprintMultiplier) : 1.0);
+
+    const double fx = std::sin(g_walkerYaw);
+    const double fz = std::cos(g_walkerYaw);
+    const double rx = std::cos(g_walkerYaw);
+    const double rz = -std::sin(g_walkerYaw);
+
+    g_walkerX += (fx * forward + rx * right) * speed * dt;
+    g_walkerZ += (fz * forward + rz * right) * speed * dt;
+}
+
+enum class InteractionKind {
+    None,
+    EnterCab,
+    FuelCard,
+    FuelNozzle,
+    FuelReceipt,
+    Trailer
+};
+
+InteractionKind current_interaction(std::wstring& label) {
+    label.clear();
+    if (!g_walkerPositionValid || !g_haveTelemetry) return InteractionKind::None;
+
+    const WorldPoint door = door_point();
+    if (distance_xz(g_walkerX, g_walkerZ, door.x, door.z) <= g_settings.interactRange) {
+        label = L"[F] ENTER CAB";
+        return InteractionKind::EnterCab;
+    }
+
+    if (g_settings.fuelEnabled &&
+        std::abs(g_gameState.speedMps) <= g_settings.exitSpeedThreshold &&
+        g_gameState.parkingBrake &&
+        !g_gameState.engineEnabled) {
+
+        int fuelStage = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            fuelStage = g_ui.fuelStage;
+        }
+
+        if (fuelStage == 0 || fuelStage == 1) {
+            const WorldPoint pump = pump_point();
+            if (distance_xz(g_walkerX, g_walkerZ, pump.x, pump.z) <= g_settings.pumpRadius) {
+                label = g_settings.fuelCardStep ? L"[F] PAY WITH TS FLEET CARD" : L"[F] TAKE NOZZLE";
+                return InteractionKind::FuelCard;
+            }
+        } else if (fuelStage == 2 || fuelStage == 3) {
+            const WorldPoint tank = tank_point();
+            if (distance_xz(g_walkerX, g_walkerZ, tank.x, tank.z) <= g_settings.tankRadius) {
+                label = fuelStage == 3 ? L"FUELING... HOLD [F]" : L"[F] FUEL";
+                return InteractionKind::FuelNozzle;
+            }
+        } else if (fuelStage == 4) {
+            const WorldPoint pump = pump_point();
+            if (distance_xz(g_walkerX, g_walkerZ, pump.x, pump.z) <= g_settings.pumpRadius) {
+                label = L"[F] TAKE RECEIPT";
+                return InteractionKind::FuelReceipt;
+            }
+        }
+    }
+
+    if (g_settings.trailerEnabled) {
+        const WorldPoint fifth = fifth_wheel_point();
+        if (distance_xz(g_walkerX, g_walkerZ, fifth.x, fifth.z) <= g_settings.fifthWheelRadius) {
+            int stage = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                stage = g_ui.trailerStage;
+            }
+
+            if (g_gameState.trailerAttached) {
+                if (!g_settings.trailerSteps) label = L"[F] UNCOUPLE TRAILER";
+                else if (stage == 0) label = L"[F] LOWER LANDING GEAR";
+                else if (stage == 1) label = L"[F] DISCONNECT AIR / ELECTRIC";
+                else label = L"[F] RELEASE FIFTH WHEEL";
+            } else {
+                if (!g_settings.trailerCoupleSteps) label = L"[F] COUPLE TRAILER";
+                else if (stage == 0) label = L"[F] LOCK FIFTH WHEEL";
+                else if (stage == 1) label = L"[F] CONNECT AIR / ELECTRIC";
+                else label = L"[F] RAISE LANDING GEAR";
+            }
+            return InteractionKind::Trailer;
+        }
+    }
+
+    return InteractionKind::None;
+}
+
+void update_context_prompt() {
+    if (!g_haveTelemetry) {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.context = L"TSMS TELEMETRY OFFLINE - CAMERA FALLBACK";
+        return;
+    }
+
+    std::wstring label;
+    current_interaction(label);
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    if (!label.empty()) {
+        g_ui.context = label;
+    } else if (g_gameState.engineEnabled && g_settings.fuelEnabled) {
+        g_ui.context = L"Fuel roleplay: stop, parking brake, engine off";
+    } else {
+        g_ui.context = L"";
+    }
+}
+
+void handle_trailer_interaction() {
+    if (!g_settings.trailerEnabled) return;
+
+    int stage = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        stage = g_ui.trailerStage;
+    }
+
+    const bool attached = g_gameState.trailerAttached;
+    const bool staged = attached ? g_settings.trailerSteps : g_settings.trailerCoupleSteps;
+
+    if (!staged) {
+        tap_key(g_settings.trailerAttachKey);
+        play_audio(L"nozzle.wav");
+        set_ui_status(attached ? L"TRAILER UNCOUPLE REQUESTED" : L"TRAILER COUPLE REQUESTED");
+        return;
+    }
+
+    if (stage == 0) {
+        play_audio(L"nozzle.wav");
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.trailerStage = 1;
+        g_ui.status = attached ? L"LANDING GEAR LOWERED" : L"FIFTH WHEEL LOCKED";
+    } else if (stage == 1) {
+        play_audio(L"nozzle.wav");
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.trailerStage = 2;
+        g_ui.status = attached ? L"AIR / ELECTRIC DISCONNECTED" : L"AIR / ELECTRIC CONNECTED";
+    } else {
+        if (attached) {
+            tap_key(g_settings.trailerAttachKey);
+            set_ui_status(L"FIFTH WHEEL RELEASE REQUESTED");
+        } else {
+            // For coupling the actual game attach key is issued at the lock step completion.
+            tap_key(g_settings.trailerAttachKey);
+            set_ui_status(L"TRAILER COUPLE REQUESTED");
+        }
+        play_audio(L"door.wav");
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_ui.trailerStage = 0;
+    }
 }
 
 void launch_config_editor() {
