@@ -34,6 +34,6 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TSRealDriver-0.5.2-CameraCompat-Windows-x64
+          name: TSRealDriver-0.5.3-GameCamera-ScanCode-Windows-x64
           path: package
           if-no-files-found: error
