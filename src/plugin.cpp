@@ -1180,6 +1180,13 @@ void enter_walk_mode() {
         return;
     }
 
+    refresh_game_state();
+    std::wstring blockedReason;
+    if (!can_leave_cab(blockedReason)) {
+        set_ui_status(blockedReason);
+        return;
+    }
+
     transition_fade(true);
 
     // ETS2/ATS developer camera is normally opened with the top-row 0 key.
@@ -1190,9 +1197,11 @@ void enter_walk_mode() {
         // Small camera-zero offset from the driver's eye toward the door.
         // It is intentionally configurable and does not patch game memory.
         hold_key_for(VK_NUMPAD4, 180ms);
-        hold_key_for(VK_NUMPAD5, 70ms);
+        hold_key_for(VK_NUMPAD2, 70ms);
         hold_key_for(VK_NUMPAD3, 80ms);
     }
+
+    initialize_walker_world_position();
 
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -1200,7 +1209,9 @@ void enter_walk_mode() {
         g_ui.paused = false;
         g_ui.fuelStage = 0;
         g_ui.fueling = false;
+        g_ui.trailerStage = 0;
         g_ui.status = L"WALK MODE";
+        g_ui.context.clear();
     }
     play_audio(L"door.wav");
     update_overlay_visibility();
@@ -1231,6 +1242,7 @@ void leave_walk_mode() {
         g_ui.flashlight = false;
     }
 
+    g_walkerPositionValid = false;
     play_audio(L"door.wav");
     update_overlay_visibility();
     transition_fade(false);
