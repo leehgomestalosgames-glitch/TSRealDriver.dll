@@ -163,61 +163,86 @@ std::string normalize_rtti_name(std::string name) {
     return name;
 }
 
+bool read_ascii_string(std::uintptr_t address, std::string& out, std::size_t maxLen = 128) {
+    out.clear();
+    if (!address || !is_readable(address, 1)) return false;
+
+    std::vector<char> buffer(maxLen, '\0');
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(),
+                           reinterpret_cast<LPCVOID>(address),
+                           buffer.data(),
+                           buffer.size() - 1,
+                           &got) ||
+        got == 0) {
+        return false;
+    }
+
+    buffer.back() = '\0';
+    const std::size_t len = strnlen(buffer.data(), buffer.size());
+    if (len == 0 || len >= buffer.size()) return false;
+
+    for (std::size_t i = 0; i < len; ++i) {
+        const unsigned char ch = static_cast<unsigned char>(buffer[i]);
+        if (ch < 0x20 || ch > 0x7e) return false;
+    }
+
+    out.assign(buffer.data(), len);
+    return true;
+}
+
 bool object_class_name(std::uintptr_t object,
-                       std::uintptr_t fallbackImageBase,
+                       std::uintptr_t /*fallbackImageBase*/,
                        std::string& out) {
     out.clear();
     if (!object || !is_readable(object, sizeof(std::uintptr_t))) return false;
 
+    // SCS game objects expose a small virtual type-name routine at vtable+0x28.
+    // In current ATS/ETS2 builds that routine is:
+    //     lea rax, [rip + rel32]
+    //     ret
+    // The target points to an indirection chain ending at the ASCII class name.
     std::uintptr_t vtable = 0;
-    if (!safe_read_value(object, vtable) || !is_readable(vtable - sizeof(std::uintptr_t), sizeof(std::uintptr_t))) {
+    if (!safe_read_value(object, vtable) ||
+        !vtable ||
+        !is_readable(vtable + 0x28, sizeof(std::uintptr_t))) {
         return false;
     }
 
-    std::uintptr_t colAddress = 0;
-    if (!safe_read_value(vtable - sizeof(std::uintptr_t), colAddress) ||
-        !is_readable(colAddress, 24)) {
+    std::uintptr_t typeNameRoutine = 0;
+    if (!safe_read_value(vtable + 0x28, typeNameRoutine) ||
+        !typeNameRoutine ||
+        !is_executable(typeNameRoutine)) {
         return false;
     }
 
-#pragma pack(push, 1)
-    struct CompleteObjectLocator64 {
-        std::uint32_t signature;
-        std::uint32_t offset;
-        std::uint32_t cdOffset;
-        std::int32_t typeDescriptorRva;
-        std::int32_t classDescriptorRva;
-        std::int32_t selfRva;
-    };
-#pragma pack(pop)
+    std::array<unsigned char, 8> code{};
+    if (!safe_read(typeNameRoutine, code.data(), code.size())) return false;
 
-    CompleteObjectLocator64 col{};
-    if (!safe_read_value(colAddress, col)) return false;
-
-    std::uintptr_t imageBase = fallbackImageBase;
-    std::uintptr_t typeDescriptor = 0;
-
-    if (col.signature == 1 && col.selfRva != 0) {
-        imageBase = colAddress - static_cast<std::uintptr_t>(col.selfRva);
-        typeDescriptor = imageBase + static_cast<std::intptr_t>(col.typeDescriptorRva);
-    } else {
+    if (code[0] != 0x48 ||
+        code[1] != 0x8d ||
+        code[2] != 0x05 ||
+        code[7] != 0xc3) {
         return false;
     }
 
-    if (!is_readable(typeDescriptor + 16, 2)) return false;
+    std::int32_t rel = 0;
+    std::memcpy(&rel, code.data() + 3, sizeof(rel));
 
-    std::array<char, 160> name{};
-    SIZE_T got = 0;
-    ReadProcessMemory(GetCurrentProcess(),
-                      reinterpret_cast<LPCVOID>(typeDescriptor + 16),
-                      name.data(),
-                      name.size() - 1,
-                      &got);
-    name.back() = '\0';
+    const std::uintptr_t target =
+        typeNameRoutine + 7 + static_cast<std::intptr_t>(rel);
 
-    if (got == 0 || name[0] == '\0') return false;
-    out = normalize_rtti_name(std::string(name.data()));
-    return !out.empty();
+    std::uintptr_t descriptor = 0;
+    if (!safe_read_value(target, descriptor) || !descriptor) {
+        return false;
+    }
+
+    std::uintptr_t namePtr = 0;
+    if (!safe_read_value(descriptor, namePtr) || !namePtr) {
+        return false;
+    }
+
+    return read_ascii_string(namePtr, out, 128);
 }
 
 bool refresh_manager_and_debug(std::uintptr_t moduleBase) {
