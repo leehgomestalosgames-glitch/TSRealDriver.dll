@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(TSRealDriver VERSION 0.4.0 LANGUAGES CXX)
+project(TSRealDriver VERSION 0.4.1 LANGUAGES CXX)
 
 add_library(TSRealDriver SHARED
     src/plugin.cpp
