@@ -182,6 +182,9 @@ void build_tabs() {
         slider(L"Mouse sensitivity", L"camera", L"mouse_sensitivity", 0.0018, 0.0005, 0.0060, 0.0001),
         slider(L"Exit angle", L"camera", L"exit_angle", -22, -90, 90, 1),
         slider(L"Enter-cabin prompt range (m)", L"camera", L"enter_range_m", 1.2, 0.4, 3.0, 0.1),
+        slider(L"Cab-exit max truck speed (m/s)", L"camera", L"cabin_exit_speed_threshold", 0.30, 0.0, 2.0, 0.05),
+        slider(L"Door outward spawn distance (m)", L"camera", L"door_outward", 2.0, 0.8, 4.0, 0.1),
+        slider(L"Walker mouse tracking scale", L"camera", L"mouse_look_scale", 0.0025, 0.0005, 0.0100, 0.0001),
         slider(L"Building hop distance (m)", L"camera", L"building_hop_m", 1.6, 0.3, 4.0, 0.1),
         slider(L"Black screen minimum (ms)", L"camera", L"fade_min_ms", 900, 0, 4000, 50),
         slider(L"Black screen maximum (ms)", L"camera", L"fade_max_ms", 3500, 0, 6000, 50),
@@ -228,10 +231,23 @@ void build_tabs() {
         toggle(L"Receipt after fuelling", L"fuel", L"receipt", true),
         toggle(L"Show hand animations", L"fuel", L"hands", true),
         toggle(L"Remember tank position per truck", L"fuel", L"remember_tank", true),
+        slider(L"Pump out from truck centre (m)", L"fuel", L"pump_out", 4.5, 1.0, 8.0, 0.1),
+        slider(L"Pump behind driver seat (m)", L"fuel", L"pump_back", 2.5, -2.0, 8.0, 0.1),
         slider(L"Pump interaction radius (m)", L"fuel", L"pump_radius_m", 4.0, 1.0, 12.0, 0.1),
+        slider(L"Tank out from truck centre (m)", L"fuel", L"tank_out", 1.4, 0.3, 3.5, 0.1),
+        slider(L"Tank behind driver seat (m)", L"fuel", L"tank_back", 1.5, -2.0, 8.0, 0.1),
         slider(L"Tank interaction radius (m)", L"fuel", L"tank_radius_m", 1.3, 0.4, 4.0, 0.1),
         slider(L"Tank length (m)", L"fuel", L"tank_length_m", 1.8, 0.5, 4.0, 0.1),
         slider(L"Learned-spot tolerance (m)", L"fuel", L"learned_spot_m", 1.1, 0.3, 3.0, 0.1),
+    }});
+
+    g_tabs.push_back({L"TRAILER", {
+        toggle(L"Trailer interaction enabled", L"trailer", L"enabled", true),
+        toggle(L"Uncouple as landing gear / hoses / pin", L"trailer", L"steps", true),
+        toggle(L"Couple as lock / hoses / landing gear", L"trailer", L"couple_steps", true),
+        toggle(L"Require tug-test workflow", L"trailer", L"tug_test", true),
+        slider(L"Fifth-wheel interaction reach (m)", L"trailer", L"radius", 2.5, 0.5, 5.0, 0.1),
+        key_item(L"Game trailer attach / detach key", L"attach_key", 'T'),
     }});
 
     g_tabs.push_back({L"KEYS", {
@@ -323,7 +339,7 @@ void apply_preset(int preset) {
 RECT tab_rect(int index) {
     const int x0 = 42;
     const int top = 98;
-    const int width = 142;
+    const int width = 126;
     return RECT{x0 + index * width, top, x0 + (index + 1) * width - 6, top + 48};
 }
 
@@ -373,7 +389,7 @@ void paint(HDC dc, const RECT& client) {
     fill(dc, header, PANEL);
     text(dc, 38, 18, L"TS REAL DRIVER", 20, ACCENT, FW_BOLD);
     text(dc, 38, 54, L"Walking, camera, interaction and simulation settings", 10, MUTED);
-    text(dc, client.right - 208, 25, L"v0.3 BETA", 9, MUTED, FW_BOLD);
+    text(dc, client.right - 208, 25, L"v0.4 INTEGRATED", 9, MUTED, FW_BOLD);
 
     for (int i = 0; i < static_cast<int>(g_tabs.size()); ++i) {
         const RECT tr = tab_rect(i);
