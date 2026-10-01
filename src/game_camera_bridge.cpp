@@ -191,17 +191,98 @@ bool read_ascii_string(std::uintptr_t address, std::string& out, std::size_t max
     return true;
 }
 
+bool plausible_camera_class_name(const std::string& raw, std::string& out) {
+    if (raw.empty()) return false;
+
+    std::string normalized = normalize_rtti_name(raw);
+    if (normalized.empty()) return false;
+
+    std::string lower = normalized;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (lower.find("camera") == std::string::npos) return false;
+
+    out = std::move(normalized);
+    return true;
+}
+
+bool class_name_from_candidate(std::uintptr_t candidate, std::string& out) {
+    // SCS has used several tiny type-name thunks over time. Some return the
+    // string directly, others return one or more descriptor/pointer hops.
+    // Follow a short, bounded chain and also understand an MSVC TypeDescriptor.
+    std::uintptr_t cursor = candidate;
+
+    for (int depth = 0; depth < 4 && cursor; ++depth) {
+        std::string raw;
+        if (read_ascii_string(cursor, raw, 128) &&
+            plausible_camera_class_name(raw, out)) {
+            return true;
+        }
+
+        // MSVC TypeDescriptor on x64: two pointers followed by the decorated name.
+        if (is_readable(cursor + 2 * sizeof(std::uintptr_t), 1) &&
+            read_ascii_string(cursor + 2 * sizeof(std::uintptr_t), raw, 128) &&
+            plausible_camera_class_name(raw, out)) {
+            return true;
+        }
+
+        std::uintptr_t next = 0;
+        if (!safe_read_value(cursor, next) ||
+            !next ||
+            next == cursor ||
+            !is_readable(next, 1)) {
+            break;
+        }
+        cursor = next;
+    }
+
+    return false;
+}
+
+bool class_name_from_msvc_rtti(std::uintptr_t vtable,
+                               std::uintptr_t imageBase,
+                               std::string& out) {
+    if (!vtable || !imageBase || vtable < sizeof(std::uintptr_t)) return false;
+
+    std::uintptr_t locatorAddress = 0;
+    if (!safe_read_value(vtable - sizeof(std::uintptr_t), locatorAddress) ||
+        !locatorAddress ||
+        !is_readable(locatorAddress, 24)) {
+        return false;
+    }
+
+    struct CompleteObjectLocator64 {
+        std::uint32_t signature;
+        std::uint32_t offset;
+        std::uint32_t cdOffset;
+        std::int32_t typeDescriptorRva;
+        std::int32_t classDescriptorRva;
+        std::int32_t selfRva;
+    } locator{};
+
+    if (!safe_read(locatorAddress, &locator, sizeof(locator))) return false;
+
+    // MSVC x64 uses signature 1 with image-relative RTTI references.
+    if (locator.signature != 1 || locator.typeDescriptorRva == 0) return false;
+
+    const std::uintptr_t typeDescriptor =
+        imageBase + static_cast<std::intptr_t>(locator.typeDescriptorRva);
+
+    std::string raw;
+    if (!read_ascii_string(typeDescriptor + 2 * sizeof(std::uintptr_t), raw, 128)) {
+        return false;
+    }
+
+    return plausible_camera_class_name(raw, out);
+}
+
 bool object_class_name(std::uintptr_t object,
-                       std::uintptr_t /*fallbackImageBase*/,
+                       std::uintptr_t fallbackImageBase,
                        std::string& out) {
     out.clear();
     if (!object || !is_readable(object, sizeof(std::uintptr_t))) return false;
 
-    // SCS game objects expose a small virtual type-name routine at vtable+0x28.
-    // In current ATS/ETS2 builds that routine is:
-    //     lea rax, [rip + rel32]
-    //     ret
-    // The target points to an indirection chain ending at the ASCII class name.
     std::uintptr_t vtable = 0;
     if (!safe_read_value(object, vtable) ||
         !vtable ||
@@ -210,39 +291,45 @@ bool object_class_name(std::uintptr_t object,
     }
 
     std::uintptr_t typeNameRoutine = 0;
-    if (!safe_read_value(vtable + 0x28, typeNameRoutine) ||
-        !typeNameRoutine ||
-        !is_executable(typeNameRoutine)) {
-        return false;
+    if (safe_read_value(vtable + 0x28, typeNameRoutine) &&
+        typeNameRoutine &&
+        is_executable(typeNameRoutine)) {
+        std::array<unsigned char, 32> code{};
+        if (safe_read(typeNameRoutine, code.data(), code.size())) {
+            // Accept the common RIP-relative LEA/MOV forms instead of requiring
+            // one exact 8-byte thunk. Game updates can change instruction
+            // scheduling without changing the underlying type-name object.
+            for (std::size_t i = 0; i + 7 <= code.size(); ++i) {
+                if ((code[i] == 0x48 || code[i] == 0x4c) &&
+                    (code[i + 1] == 0x8d || code[i + 1] == 0x8b) &&
+                    (code[i + 2] & 0xc7) == 0x05) {
+                    std::int32_t rel = 0;
+                    std::memcpy(&rel, code.data() + i + 3, sizeof(rel));
+
+                    const std::uintptr_t target =
+                        typeNameRoutine + i + 7 + static_cast<std::intptr_t>(rel);
+
+                    if (class_name_from_candidate(target, out)) {
+                        return true;
+                    }
+                }
+
+                if (i + 10 <= code.size() &&
+                    code[i] == 0x48 &&
+                    code[i + 1] == 0xb8) {
+                    std::uintptr_t immediate = 0;
+                    std::memcpy(&immediate, code.data() + i + 2, sizeof(immediate));
+                    if (class_name_from_candidate(immediate, out)) {
+                        return true;
+                    }
+                }
+            }
+        }
     }
 
-    std::array<unsigned char, 8> code{};
-    if (!safe_read(typeNameRoutine, code.data(), code.size())) return false;
-
-    if (code[0] != 0x48 ||
-        code[1] != 0x8d ||
-        code[2] != 0x05 ||
-        code[7] != 0xc3) {
-        return false;
-    }
-
-    std::int32_t rel = 0;
-    std::memcpy(&rel, code.data() + 3, sizeof(rel));
-
-    const std::uintptr_t target =
-        typeNameRoutine + 7 + static_cast<std::intptr_t>(rel);
-
-    std::uintptr_t descriptor = 0;
-    if (!safe_read_value(target, descriptor) || !descriptor) {
-        return false;
-    }
-
-    std::uintptr_t namePtr = 0;
-    if (!safe_read_value(descriptor, namePtr) || !namePtr) {
-        return false;
-    }
-
-    return read_ascii_string(namePtr, out, 128);
+    // Fallback: read the compiler RTTI attached to the object's vtable. This is
+    // independent of the exact implementation of the game's type-name vfunc.
+    return class_name_from_msvc_rtti(vtable, fallbackImageBase, out);
 }
 
 bool refresh_manager_and_debug(std::uintptr_t moduleBase) {
@@ -488,15 +575,35 @@ std::wstring game_camera_bridge_report() {
 std::wstring game_camera_bridge_census() {
     std::wostringstream out;
 
-    if (!game_camera_bridge_refresh()) {
+    // Census is diagnostic: it must still enumerate the manager when debug-camera
+    // recognition failed. Do not make the report depend on refresh() succeeding.
+    if (!g_status.managerSingletonAddress) {
+        game_camera_bridge_resolve();
+    }
+
+    if (!g_status.managerSingletonAddress) {
         out << L"[camera] census unavailable: " << g_status.error;
         return out.str();
     }
 
+    std::uintptr_t manager = 0;
+    if (!safe_read_value(g_status.managerSingletonAddress, manager) ||
+        !manager ||
+        !is_readable(manager + 0x40, 8)) {
+        out << L"[camera] census manager is not ready";
+        return out.str();
+    }
+
+    g_status.managerObject = manager;
+
+    std::uint32_t current = 0;
+    safe_read_value(manager + 0x10, current);
+    g_status.currentCameraSlot = static_cast<int>(current);
+
     std::uintptr_t slots = 0;
     std::uint64_t count = 0;
-    if (!safe_read_value(g_status.managerObject + 0x38, slots) ||
-        !safe_read_value(g_status.managerObject + 0x40, count) ||
+    if (!safe_read_value(manager + 0x38, slots) ||
+        !safe_read_value(manager + 0x40, count) ||
         !slots ||
         count == 0 ||
         count > 64) {
@@ -504,14 +611,18 @@ std::wstring game_camera_bridge_census() {
         return out.str();
     }
 
-    out << L"[camera] census: manager=0x" << std::hex << g_status.managerObject
+    out << L"[camera] census: manager=0x" << std::hex << manager
         << L" current=" << std::dec << g_status.currentCameraSlot
         << L" requested_field=";
 
     std::uint32_t requested = 0;
-    safe_read_value(g_status.managerObject + 0x14, requested);
+    safe_read_value(manager + 0x14, requested);
     out << requested
         << L" slots=" << count;
+
+    if (!g_status.error.empty()) {
+        out << L" resolver_error=" << g_status.error;
+    }
 
     const std::uintptr_t moduleBase =
         reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
