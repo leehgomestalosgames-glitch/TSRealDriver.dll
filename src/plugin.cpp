@@ -7,8 +7,11 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
+#include <vector>
+#include <mmsystem.h>
 
 namespace {
 
@@ -51,6 +54,23 @@ struct Settings {
     bool debugCameraBridge = true;
     bool autoDoorOffset = true;
     int sprintWheelNotches = 3;
+
+    bool headBob = true;
+    bool breathingMotion = true;
+    bool fadeEnabled = true;
+    bool soundEnabled = true;
+    bool breathingSound = true;
+    bool shadowEnabled = true;
+
+    double bobAmount = 0.004;
+    double swayAmount = 0.003;
+    double stepLength = 0.93;
+    double runStride = 0.75;
+    double runHeadDip = 0.60;
+    double runSway = 0.30;
+    double landingDip = 0.035;
+    double tiredAfterSeconds = 18.0;
+    double masterVolume = 0.70;
 };
 
 struct UiState {
@@ -72,9 +92,11 @@ std::filesystem::path g_moduleDir;
 std::filesystem::path g_iniPath;
 std::filesystem::path g_logPath;
 std::filesystem::path g_configExePath;
+std::filesystem::path g_audioDir;
 
 HWND g_promptWindow = nullptr;
 HWND g_flashlightWindow = nullptr;
+HWND g_fadeWindow = nullptr;
 FILETIME g_lastIniWrite{};
 
 bool key_down(int vk) {
@@ -182,6 +204,24 @@ void load_settings() {
     g_settings.debugCameraBridge = parse_ini_bool(L"camera", L"debug_camera_bridge", true);
     g_settings.autoDoorOffset = parse_ini_bool(L"camera", L"auto_door_offset", true);
     g_settings.sprintWheelNotches = parse_ini_int(L"camera", L"sprint_wheel_notches", 3);
+
+    g_settings.headBob = parse_ini_bool(L"movement", L"head_bob", true);
+    g_settings.breathingMotion = parse_ini_bool(L"movement", L"breathing_motion", true);
+    g_settings.fadeEnabled = parse_ini_bool(L"movement", L"fade_enabled", true);
+    g_settings.bobAmount = parse_ini_double(L"movement", L"bob_amount", 0.004);
+    g_settings.swayAmount = parse_ini_double(L"movement", L"sway_amount", 0.003);
+    g_settings.stepLength = parse_ini_double(L"movement", L"step_length", 0.93);
+    g_settings.runStride = parse_ini_double(L"movement", L"run_stride", 0.75);
+    g_settings.runHeadDip = parse_ini_double(L"movement", L"run_head_dip", 0.60);
+    g_settings.runSway = parse_ini_double(L"movement", L"run_sway", 0.30);
+    g_settings.landingDip = parse_ini_double(L"movement", L"landing_dip", 0.035);
+
+    g_settings.soundEnabled = parse_ini_bool(L"sound", L"enabled", true);
+    g_settings.breathingSound = parse_ini_bool(L"sound", L"breathing", true);
+    g_settings.tiredAfterSeconds = parse_ini_double(L"sound", L"tired_after_s", 18.0);
+    g_settings.masterVolume = parse_ini_double(L"sound", L"master_volume", 0.70);
+
+    g_settings.shadowEnabled = parse_ini_bool(L"shadow", L"enabled", true);
 
     query_write_time(g_iniPath, g_lastIniWrite);
     log_line(L"Configuration loaded.");
