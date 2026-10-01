@@ -339,16 +339,50 @@ void send_key(int vk, bool down) {
     SendInput(1, &input, sizeof(INPUT));
 }
 
+// The SCS free-camera controls are read through the game's low-level keyboard
+// path. Virtual-key SendInput events can be visible to Windows while still being
+// ignored by that path. Emit hardware-style scan codes for controls that must be
+// seen by the game (numpad camera movement and Numpad 0).
+void send_game_key(int vk, bool down) {
+    const UINT scan = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC_EX);
+    if (scan == 0) {
+        send_key(vk, down);
+        return;
+    }
+
+    INPUT input{};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = 0;
+    input.ki.wScan = static_cast<WORD>(scan & 0xff);
+    input.ki.dwFlags = KEYEVENTF_SCANCODE | (down ? 0 : KEYEVENTF_KEYUP);
+    if ((scan & 0xff00u) == 0xe000u || (scan & 0xff00u) == 0xe100u) {
+        input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    SendInput(1, &input, sizeof(INPUT));
+}
+
 void tap_key(int vk) {
     send_key(vk, true);
     std::this_thread::sleep_for(8ms);
     send_key(vk, false);
 }
 
+void tap_game_key(int vk) {
+    send_game_key(vk, true);
+    std::this_thread::sleep_for(24ms);
+    send_game_key(vk, false);
+}
+
 void hold_key_for(int vk, std::chrono::milliseconds duration) {
     send_key(vk, true);
     std::this_thread::sleep_for(duration);
     send_key(vk, false);
+}
+
+void hold_game_key_for(int vk, std::chrono::milliseconds duration) {
+    send_game_key(vk, true);
+    std::this_thread::sleep_for(duration);
+    send_game_key(vk, false);
 }
 
 void send_wheel(int notches) {
@@ -1312,17 +1346,17 @@ bool g_sentEyeDown = false;
 void mirror_key(int source, int target, bool& state) {
     const bool down = key_down(source);
     if (down == state) return;
-    send_key(target, down);
+    send_game_key(target, down);
     state = down;
 }
 
 void release_walk_keys() {
-    if (g_sentForward) send_key(VK_NUMPAD8, false);
-    if (g_sentBackward) send_key(VK_NUMPAD5, false);
-    if (g_sentLeft) send_key(VK_NUMPAD4, false);
-    if (g_sentRight) send_key(VK_NUMPAD6, false);
-    if (g_sentEyeUp) send_key(VK_NUMPAD9, false);
-    if (g_sentEyeDown) send_key(VK_NUMPAD3, false);
+    if (g_sentForward) send_game_key(VK_NUMPAD8, false);
+    if (g_sentBackward) send_game_key(VK_NUMPAD2, false);
+    if (g_sentLeft) send_game_key(VK_NUMPAD4, false);
+    if (g_sentRight) send_game_key(VK_NUMPAD6, false);
+    if (g_sentEyeUp) send_game_key(VK_NUMPAD9, false);
+    if (g_sentEyeDown) send_game_key(VK_NUMPAD3, false);
 
     g_sentForward = false;
     g_sentBackward = false;
@@ -1382,32 +1416,50 @@ void enter_walk_mode() {
 
     transition_fade(true);
 
-    // Request the game's debug camera through the native camera manager.
-    // This is separate from the player's own Numpad-0 free-camera toggle.
+    // First let the game itself activate Numpad-0 free camera. Going through
+    // the game's normal camera command initializes/synchronizes the debug camera
+    // better than writing only the requested slot, which can resurrect an old
+    // free-camera position from another place on the map.
     game_camera_bridge_refresh();
     g_previousCameraSlot = game_camera_bridge_current_slot();
 
     log_line(game_camera_bridge_report());
 
-    if (!game_camera_bridge_request_debug(1200)) {
-        log_line(std::wstring(L"Walk enter failed: ") + game_camera_bridge_status().error);
-        log_line(game_camera_bridge_census());
-        transition_fade(false);
-        set_ui_status(L"NATIVE WALK CAMERA NOT READY");
-        return;
+    bool debugReady = false;
+    const auto debugStatus = game_camera_bridge_status();
+    if (debugStatus.debugCameraSlot >= 0) {
+        tap_game_key(VK_NUMPAD0);
+
+        const ULONGLONG start = GetTickCount64();
+        while (GetTickCount64() - start <= 1200) {
+            const int current = game_camera_bridge_current_slot();
+            if (current == debugStatus.debugCameraSlot) {
+                debugReady = true;
+                break;
+            }
+            Sleep(20);
+        }
     }
 
-    log_line(L"Walk enter: native debug camera requested successfully.");
+    if (debugReady) {
+        log_line(L"Walk enter: debug camera activated through the game's Numpad-0 path.");
+    } else {
+        log_line(L"Walk enter: Numpad-0 path did not switch cameras; falling back to native slot request.");
+        if (!game_camera_bridge_request_debug(1200)) {
+            log_line(std::wstring(L"Walk enter failed: ") + game_camera_bridge_status().error);
+            log_line(game_camera_bridge_census());
+            transition_fade(false);
+            set_ui_status(L"NATIVE WALK CAMERA NOT READY");
+            return;
+        }
+        log_line(L"Walk enter: native debug camera fallback requested successfully.");
+    }
 
-    // Temporary door placement bridge: once the debug camera is active, use a
-    // slow free-camera movement pulse to step out of the driver's side. The
-    // camera switch itself is now native; this pulse will be removed once the
-    // debug-camera pose fields are resolved for this build.
+    // Step sideways out of the driver's side without forcing the camera down
+    // under the truck. Vertical placement will stay at the game's camera height.
     if (g_settings.autoDoorOffset) {
         set_game_flyspeed(g_settings.spawnFlySpeed);
-        hold_key_for(VK_NUMPAD4, 300ms);
-        hold_key_for(VK_NUMPAD2, 90ms);
-        hold_key_for(VK_NUMPAD3, 180ms);
+        hold_game_key_for(VK_NUMPAD4, 260ms);
         set_game_flyspeed(g_settings.walkFlySpeed);
     }
 
@@ -1448,8 +1500,24 @@ void leave_walk_mode() {
     set_game_flyspeed(g_settings.restoreFlySpeed);
 
     if (g_previousCameraSlot >= 0) {
-        if (game_camera_bridge_request_slot(g_previousCameraSlot, 1200)) {
-            log_line(L"Walk leave: restored the previous game camera slot.");
+        bool restored = false;
+
+        // Mirror the normal game behaviour first: Numpad 0 leaves the developer
+        // camera and normally restores the camera that was active before it.
+        tap_game_key(VK_NUMPAD0);
+        const ULONGLONG restoreStart = GetTickCount64();
+        while (GetTickCount64() - restoreStart <= 900) {
+            if (game_camera_bridge_current_slot() == g_previousCameraSlot) {
+                restored = true;
+                break;
+            }
+            Sleep(20);
+        }
+
+        if (restored) {
+            log_line(L"Walk leave: previous camera restored through the game's Numpad-0 path.");
+        } else if (game_camera_bridge_request_slot(g_previousCameraSlot, 1200)) {
+            log_line(L"Walk leave: restored the previous game camera slot through native fallback.");
         } else {
             log_line(std::wstring(L"Walk leave: could not restore previous camera slot: ") +
                      game_camera_bridge_status().error);
@@ -1961,7 +2029,7 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
 
     g_stop = false;
     g_worker = std::thread(worker_main);
-    log_line(L"TSRealDriver 0.5.2 initialized.");
+    log_line(L"TSRealDriver 0.5.3 initialized.");
     return 0;
 }
 
