@@ -2,19 +2,16 @@
 
 Independent ETS2/ATS driver-walking plug-in for the TSMS ecosystem.
 
-## TSRealDriver 0.4.2 — Camera Stabilization
+## TSRealDriver 0.5 — Native Camera Manager Test
 
-This build addresses the first recorded in-game ATS walk test.
+This build changes the walk entry path based on the supplied reference behavior and the user's ATS test.
 
-- Forces the normal interior camera before entering developer/free camera.
-- Uses **Numpad 0** to activate the developer/free camera.
-- Corrects free-camera reverse to **Numpad 5**.
-- Controls `g_flyspeed` while the screen is faded so the timed door offset no longer launches the camera several metres away at the game's default fly speed.
-- Uses a controlled spawn speed, then switches to a walking-speed free camera and restores the configured free-camera speed when returning to the cab.
-- Reduces the generated footstep level further while the audio replacement work continues.
-- Keeps the 44.1 kHz regenerated interaction audio from 0.4.1.
-
-This build is intended to make the driver spawn just outside the cab instead of appearing high above, below, or far away from the truck.
+- F10 no longer simulates Numpad 0 to enter walk mode.
+- TSRealDriver resolves the game's `camera_manager`, finds the `debug_camera` slot through RTTI, writes the requested camera slot through the manager, and waits for the game to switch.
+- The player's own Numpad-0 free-camera mode remains separate.
+- If native camera resolution/switch fails, walk mode is not enabled and no fake footsteps are started.
+- Prototype footsteps are muted by default in this build; other interaction audio remains available.
+- The temporary door-position pulse remains only after the native debug-camera switch; exact camera pose writing is the next resolver step.
 
 ### Runtime
 
