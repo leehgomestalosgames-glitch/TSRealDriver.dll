@@ -75,6 +75,26 @@ struct Settings {
     double landingDip = 0.035;
     double tiredAfterSeconds = 18.0;
     double masterVolume = 0.70;
+
+    double exitSpeedThreshold = 0.30;
+    double doorOutward = 2.0;
+    double interactRange = 1.2;
+    double mouseLookScale = 0.0025;
+
+    bool fuelCardStep = true;
+    bool rememberTank = true;
+    double pumpOut = 4.5;
+    double pumpBack = 2.5;
+    double pumpRadius = 4.0;
+    double tankOut = 1.4;
+    double tankBack = 1.5;
+    double tankRadius = 1.3;
+
+    bool trailerEnabled = true;
+    bool trailerSteps = true;
+    bool trailerCoupleSteps = true;
+    double fifthWheelRadius = 2.5;
+    int trailerAttachKey = 'T';
 };
 
 struct UiState {
@@ -85,7 +105,9 @@ struct UiState {
     int fuelStage = 0;
     bool fueling = false;
     bool buildingMode = false;
+    int trailerStage = 0;
     std::wstring status = L"READY";
+    std::wstring context = L"";
 };
 
 Settings g_settings;
@@ -102,6 +124,23 @@ HWND g_promptWindow = nullptr;
 HWND g_flashlightWindow = nullptr;
 HWND g_fadeWindow = nullptr;
 FILETIME g_lastIniWrite{};
+
+TsmsGameState g_gameState{};
+bool g_haveTelemetry = false;
+
+double g_walkerX = 0.0;
+double g_walkerY = 0.0;
+double g_walkerZ = 0.0;
+double g_walkerYaw = 0.0;
+bool g_walkerPositionValid = false;
+
+HHOOK g_mouseHook = nullptr;
+POINT g_lastMousePoint{};
+bool g_haveMousePoint = false;
+std::atomic<long> g_mouseDx{0};
+std::atomic<long> g_mouseDy{0};
+std::atomic<int> g_mouseWheel{0};
+
 
 bool key_down(int vk) {
     return vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
@@ -226,6 +265,26 @@ void load_settings() {
     g_settings.masterVolume = parse_ini_double(L"sound", L"master_volume", 0.70);
 
     g_settings.shadowEnabled = parse_ini_bool(L"shadow", L"enabled", true);
+
+    g_settings.exitSpeedThreshold = parse_ini_double(L"camera", L"cabin_exit_speed_threshold", 0.30);
+    g_settings.doorOutward = parse_ini_double(L"camera", L"door_outward", 2.0);
+    g_settings.interactRange = parse_ini_double(L"camera", L"enter_range_m", 1.2);
+    g_settings.mouseLookScale = parse_ini_double(L"camera", L"mouse_look_scale", 0.0025);
+
+    g_settings.fuelCardStep = parse_ini_bool(L"fuel", L"card_step", true);
+    g_settings.rememberTank = parse_ini_bool(L"fuel", L"remember_tank", true);
+    g_settings.pumpOut = parse_ini_double(L"fuel", L"pump_out", 4.5);
+    g_settings.pumpBack = parse_ini_double(L"fuel", L"pump_back", 2.5);
+    g_settings.pumpRadius = parse_ini_double(L"fuel", L"pump_radius_m", 4.0);
+    g_settings.tankOut = parse_ini_double(L"fuel", L"tank_out", 1.4);
+    g_settings.tankBack = parse_ini_double(L"fuel", L"tank_back", 1.5);
+    g_settings.tankRadius = parse_ini_double(L"fuel", L"tank_radius_m", 1.3);
+
+    g_settings.trailerEnabled = parse_ini_bool(L"trailer", L"enabled", true);
+    g_settings.trailerSteps = parse_ini_bool(L"trailer", L"steps", true);
+    g_settings.trailerCoupleSteps = parse_ini_bool(L"trailer", L"couple_steps", true);
+    g_settings.fifthWheelRadius = parse_ini_double(L"trailer", L"radius", 2.5);
+    g_settings.trailerAttachKey = parse_ini_int(L"trailer", L"attach_key", 'T');
 
     query_write_time(g_iniPath, g_lastIniWrite);
     log_line(L"Configuration loaded.");
