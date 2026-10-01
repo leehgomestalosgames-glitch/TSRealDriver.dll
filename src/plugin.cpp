@@ -60,6 +60,7 @@ struct Settings {
     bool fuelEnabled = true;
     bool debugCameraBridge = true;
     bool autoDoorOffset = true;
+    bool blockGameKeys = true;
     int sprintWheelNotches = 3;
 
     bool headBob = true;
@@ -139,6 +140,8 @@ double g_walkerYaw = 0.0;
 bool g_walkerPositionValid = false;
 
 HHOOK g_mouseHook = nullptr;
+HHOOK g_keyboardHook = nullptr;
+std::array<std::atomic_bool, 256> g_hookKeyState{};
 POINT g_lastMousePoint{};
 bool g_haveMousePoint = false;
 std::atomic<long> g_mouseDx{0};
@@ -147,7 +150,11 @@ std::atomic<int> g_mouseWheel{0};
 
 
 bool key_down(int vk) {
-    return vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
+    if (vk <= 0) return false;
+    if (vk < static_cast<int>(g_hookKeyState.size()) && g_hookKeyState[static_cast<std::size_t>(vk)].load()) {
+        return true;
+    }
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
 int parse_ini_int(const wchar_t* section, const wchar_t* key, int fallback) {
@@ -252,6 +259,7 @@ void load_settings() {
     g_settings.fuelEnabled = parse_ini_bool(L"fuel", L"enabled", true);
     g_settings.debugCameraBridge = parse_ini_bool(L"camera", L"debug_camera_bridge", true);
     g_settings.autoDoorOffset = parse_ini_bool(L"camera", L"auto_door_offset", true);
+    g_settings.blockGameKeys = parse_ini_bool(L"camera", L"block_game_keys", true);
     g_settings.sprintWheelNotches = parse_ini_int(L"camera", L"sprint_wheel_notches", 3);
 
     g_settings.headBob = parse_ini_bool(L"movement", L"head_bob", true);
@@ -433,6 +441,65 @@ void mouse_nudge(LONG dx, LONG dy) {
     SendInput(1, &input, sizeof(INPUT));
 }
 
+
+
+bool should_block_game_key(DWORD vk) {
+    if (!g_settings.blockGameKeys) return false;
+
+    bool walking = false;
+    bool paused = false;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        walking = g_ui.walking;
+        paused = g_ui.paused;
+    }
+    if (!walking || paused) return false;
+
+    return vk == static_cast<DWORD>(g_settings.forwardKey) ||
+           vk == static_cast<DWORD>(g_settings.backwardKey) ||
+           vk == static_cast<DWORD>(g_settings.leftKey) ||
+           vk == static_cast<DWORD>(g_settings.rightKey) ||
+           vk == static_cast<DWORD>(g_settings.jumpKey) ||
+           vk == static_cast<DWORD>(g_settings.eyeDownKey) ||
+           vk == static_cast<DWORD>(g_settings.eyeUpKey) ||
+           vk == static_cast<DWORD>(g_settings.eyeResetKey);
+}
+
+LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION) {
+        const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        if (info && (info->flags & LLKHF_INJECTED) == 0) {
+            const DWORD vk = info->vkCode;
+            const bool down = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+            const bool up = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+
+            if (vk < g_hookKeyState.size() && (down || up)) {
+                g_hookKeyState[vk].store(down);
+            }
+
+            if (should_block_game_key(vk)) {
+                return 1;
+            }
+        }
+    }
+
+    return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+}
+
+void install_keyboard_hook() {
+    if (g_keyboardHook) return;
+    for (auto& key : g_hookKeyState) key.store(false);
+    g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_module, 0);
+    log_line(g_keyboardHook ? L"Walking keyboard isolation online." : L"Walking keyboard isolation unavailable.");
+}
+
+void uninstall_keyboard_hook() {
+    if (g_keyboardHook) {
+        UnhookWindowsHookEx(g_keyboardHook);
+        g_keyboardHook = nullptr;
+    }
+    for (auto& key : g_hookKeyState) key.store(false);
+}
 
 LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION) {
@@ -1346,6 +1413,7 @@ void worker_main() {
     tsms_bridge_open();
     refresh_game_state();
     install_mouse_hook();
+    install_keyboard_hook();
     create_overlay_windows();
 
     Edge f10Edge;
@@ -1691,6 +1759,7 @@ void worker_main() {
     release_walk_keys();
     send_key(VK_RETURN, false);
     uninstall_mouse_hook();
+    uninstall_keyboard_hook();
     tsms_bridge_close();
     destroy_overlay_windows();
 }
