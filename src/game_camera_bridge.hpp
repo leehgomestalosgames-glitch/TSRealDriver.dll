@@ -21,3 +21,4 @@ bool game_camera_bridge_request_slot(int slot, unsigned timeoutMs = 1200);
 int game_camera_bridge_current_slot();
 const GameCameraBridgeStatus& game_camera_bridge_status();
 std::wstring game_camera_bridge_report();
+std::wstring game_camera_bridge_census();
