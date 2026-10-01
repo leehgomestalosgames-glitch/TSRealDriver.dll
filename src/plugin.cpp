@@ -74,6 +74,7 @@ struct Settings {
     bool breathingMotion = true;
     bool fadeEnabled = true;
     bool soundEnabled = true;
+    bool footstepSounds = false;
     bool breathingSound = true;
     bool shadowEnabled = true;
 
@@ -288,6 +289,7 @@ void load_settings() {
     g_settings.landingDip = parse_ini_double(L"movement", L"landing_dip", 0.035);
 
     g_settings.soundEnabled = parse_ini_bool(L"sound", L"enabled", true);
+    g_settings.footstepSounds = parse_ini_bool(L"sound", L"footsteps", false);
     g_settings.breathingSound = parse_ini_bool(L"sound", L"breathing", true);
     g_settings.tiredAfterSeconds = parse_ini_double(L"sound", L"tired_after_s", 18.0);
     g_settings.masterVolume = parse_ini_double(L"sound", L"master_volume", 0.70);
@@ -1699,7 +1701,7 @@ void worker_main() {
                     const wchar_t* stepSound = nullptr;
                     if (sprintNow) stepSound = (bobPhase > 0) ? L"runstep1.wav" : L"runstep2.wav";
                     else stepSound = (bobPhase > 0) ? L"footstep1.wav" : L"footstep2.wav";
-                    play_audio(stepSound);
+                    if (g_settings.footstepSounds) play_audio(stepSound);
 
                     if (g_settings.headBob) {
                         const int bobPixels = std::max(1, static_cast<int>(std::round(g_settings.bobAmount * 500.0)));
