@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -437,6 +438,10 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION) {
         const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         if (info) {
+            if ((info->flags & LLMHF_INJECTED) != 0) {
+                return CallNextHookEx(g_mouseHook, code, wParam, lParam);
+            }
+
             if (!g_haveMousePoint) {
                 g_lastMousePoint = info->pt;
                 g_haveMousePoint = true;
@@ -447,7 +452,7 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam) {
             }
 
             if (wParam == WM_MOUSEWHEEL) {
-                const short delta = GET_WHEEL_DELTA_WPARAM(info->mouseData);
+                const short delta = static_cast<short>(HIWORD(info->mouseData));
                 if (delta != 0) g_mouseWheel.fetch_add(delta / WHEEL_DELTA);
             }
         }
