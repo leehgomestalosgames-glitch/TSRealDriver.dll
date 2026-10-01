@@ -63,6 +63,10 @@ struct Settings {
     bool debugCameraBridge = true;
     bool autoDoorOffset = true;
     bool blockGameKeys = true;
+    bool consoleSpeedControl = true;
+    double spawnFlySpeed = 5.0;
+    double walkFlySpeed = 1.75;
+    double restoreFlySpeed = 100.0;
     int sprintWheelNotches = 3;
 
     bool headBob = true;
@@ -264,6 +268,10 @@ void load_settings() {
     g_settings.debugCameraBridge = parse_ini_bool(L"camera", L"debug_camera_bridge", true);
     g_settings.autoDoorOffset = parse_ini_bool(L"camera", L"auto_door_offset", true);
     g_settings.blockGameKeys = parse_ini_bool(L"camera", L"block_game_keys", true);
+    g_settings.consoleSpeedControl = parse_ini_bool(L"camera", L"console_speed_control", true);
+    g_settings.spawnFlySpeed = parse_ini_double(L"camera", L"spawn_fly_speed", 5.0);
+    g_settings.walkFlySpeed = parse_ini_double(L"camera", L"walk_fly_speed", 1.75);
+    g_settings.restoreFlySpeed = parse_ini_double(L"camera", L"restore_fly_speed", 100.0);
     g_settings.sprintWheelNotches = parse_ini_int(L"camera", L"sprint_wheel_notches", 3);
 
     g_settings.headBob = parse_ini_bool(L"movement", L"head_bob", true);
@@ -404,13 +412,13 @@ std::vector<short> synth_footstep(bool running, int variant) {
 
         const double thumpHz = running ? (82.0 + variant * 3.0) : (68.0 + variant * 2.0);
         const double thump =
-            std::sin(6.283185307179586 * thumpHz * t) * heelEnv * (running ? 0.20 : 0.16);
+            std::sin(6.283185307179586 * thumpHz * t) * heelEnv * (running ? 0.10 : 0.08);
 
         const double sole =
-            (0.72 * low + 0.28 * mid) * heelEnv * (running ? 0.20 : 0.16);
+            (0.72 * low + 0.28 * mid) * heelEnv * (running ? 0.11 : 0.085);
 
         const double toe =
-            (mid - low) * toeEnv * (running ? 0.12 : 0.10);
+            (mid - low) * toeEnv * (running ? 0.07 : 0.055);
 
         const double sample = std::clamp(thump + sole + toe, -0.55, 0.55);
         data[static_cast<std::size_t>(i)] = static_cast<short>(sample * 32767.0);
@@ -496,6 +504,47 @@ void play_audio(const wchar_t* fileName) {
     const auto path = g_audioDir / fileName;
     if (!std::filesystem::exists(path)) return;
     PlaySoundW(path.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+}
+
+
+void type_text(const std::wstring& text) {
+    for (const wchar_t ch : text) {
+        const SHORT code = VkKeyScanW(ch);
+        if (code == -1) continue;
+
+        const int vk = LOBYTE(code);
+        const int modifiers = HIBYTE(code);
+
+        if (modifiers & 1) send_key(VK_SHIFT, true);
+        if (modifiers & 2) send_key(VK_CONTROL, true);
+        if (modifiers & 4) send_key(VK_MENU, true);
+
+        tap_key(vk);
+
+        if (modifiers & 4) send_key(VK_MENU, false);
+        if (modifiers & 2) send_key(VK_CONTROL, false);
+        if (modifiers & 1) send_key(VK_SHIFT, false);
+
+        std::this_thread::sleep_for(2ms);
+    }
+}
+
+void set_game_flyspeed(double speed) {
+    if (!g_settings.consoleSpeedControl || g_settings.consoleKey <= 0) return;
+
+    wchar_t command[64]{};
+    _snwprintf_s(command, _countof(command), _TRUNCATE, L"g_flyspeed %.2f", speed);
+
+    // Run while the screen is faded so the console is not visible to the player.
+    tap_key(g_settings.consoleKey);
+    std::this_thread::sleep_for(80ms);
+    type_text(command);
+    tap_key(VK_RETURN);
+    std::this_thread::sleep_for(80ms);
+    tap_key(g_settings.consoleKey);
+    std::this_thread::sleep_for(80ms);
+
+    log_line(std::wstring(L"Developer camera speed requested: ") + command);
 }
 
 void mouse_nudge(LONG dx, LONG dy) {
@@ -1329,20 +1378,28 @@ void enter_walk_mode() {
 
     transition_fade(true);
 
-    // ETS2/ATS developer free camera is toggled with NUMPAD 0.
-    // The previous build incorrectly sent the top-row 0 key.
+    // Start from the normal interior camera so the developer camera does not
+    // resume from an old aerial/free-camera position.
+    tap_key('1');
+    std::this_thread::sleep_for(120ms);
+
     log_line(L"Walk enter: toggling developer camera with NUMPAD0.");
     tap_key(VK_NUMPAD0);
-    std::this_thread::sleep_for(320ms);
+    std::this_thread::sleep_for(260ms);
+
+    // ATS/ETS2 defaults g_flyspeed around 100, which makes timed door offsets
+    // launch the camera many metres away. Use a controlled spawn speed first.
+    set_game_flyspeed(g_settings.spawnFlySpeed);
 
     if (g_settings.autoDoorOffset) {
-        // Small camera-zero offset from the driver's eye toward the door.
-        // It is intentionally configurable and does not patch game memory.
-        hold_key_for(VK_NUMPAD4, 180ms);
-        hold_key_for(VK_NUMPAD2, 70ms);
-        hold_key_for(VK_NUMPAD3, 80ms);
+        // From the driver's eye: left toward the door, slightly rearward, then
+        // down toward standing eye height outside the cab.
+        hold_key_for(VK_NUMPAD4, 360ms);
+        hold_key_for(VK_NUMPAD5, 90ms);
+        hold_key_for(VK_NUMPAD3, 230ms);
     }
 
+    set_game_flyspeed(g_settings.walkFlySpeed);
     initialize_walker_world_position();
 
     {
@@ -1377,6 +1434,7 @@ void leave_walk_mode() {
     }
 
     transition_fade(true);
+    set_game_flyspeed(g_settings.restoreFlySpeed);
     log_line(L"Walk leave: returning from developer camera with NUMPAD0.");
     tap_key(VK_NUMPAD0);
 
@@ -1572,7 +1630,7 @@ void worker_main() {
 
             // The game's developer/free-camera movement axes.
             mirror_key(g_settings.forwardKey, VK_NUMPAD8, g_sentForward);
-            mirror_key(g_settings.backwardKey, VK_NUMPAD2, g_sentBackward);
+            mirror_key(g_settings.backwardKey, VK_NUMPAD5, g_sentBackward);
             mirror_key(g_settings.leftKey, VK_NUMPAD4, g_sentLeft);
             mirror_key(g_settings.rightKey, VK_NUMPAD6, g_sentRight);
             mirror_key(g_settings.eyeUpKey, VK_NUMPAD9, g_sentEyeUp);
