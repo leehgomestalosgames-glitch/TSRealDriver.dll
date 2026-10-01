@@ -481,6 +481,26 @@ LRESULT CALLBACK PromptWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     }
 }
 
+LRESULT CALLBACK FadeWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(dc, &client, brush);
+        DeleteObject(brush);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
 LRESULT CALLBACK FlashlightWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_PAINT: {
@@ -502,19 +522,38 @@ LRESULT CALLBACK FlashlightWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
         const int cx = (client.right - client.left) / 2;
         const int cy = (client.bottom - client.top) / 2;
-        const int scale = state.flashlightSize;
-        const int width = 360 + scale * 130;
-        const int height = 240 + scale * 90;
 
-        HBRUSH outer = CreateSolidBrush(RGB(255, 245, 205));
-        HPEN none = CreatePen(PS_NULL, 0, RGB(0, 0, 0));
-        HGDIOBJ oldBrush = SelectObject(dc, outer);
-        HGDIOBJ oldPen = SelectObject(dc, none);
-        Ellipse(dc, cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2);
-        SelectObject(dc, oldPen);
-        SelectObject(dc, oldBrush);
-        DeleteObject(none);
-        DeleteObject(outer);
+        if (state.walking && g_settings.shadowEnabled) {
+            const int shadowW = 210;
+            const int shadowH = 58;
+            const int shadowY = client.bottom - 130;
+
+            HBRUSH shadow = CreateSolidBrush(RGB(12, 12, 14));
+            HPEN none = CreatePen(PS_NULL, 0, RGB(0, 0, 0));
+            HGDIOBJ oldBrush = SelectObject(dc, shadow);
+            HGDIOBJ oldPen = SelectObject(dc, none);
+            Ellipse(dc, cx - shadowW / 2, shadowY - shadowH / 2, cx + shadowW / 2, shadowY + shadowH / 2);
+            SelectObject(dc, oldPen);
+            SelectObject(dc, oldBrush);
+            DeleteObject(none);
+            DeleteObject(shadow);
+        }
+
+        if (state.flashlight) {
+            const int scale = state.flashlightSize;
+            const int width = 360 + scale * 130;
+            const int height = 240 + scale * 90;
+
+            HBRUSH outer = CreateSolidBrush(RGB(255, 245, 205));
+            HPEN none = CreatePen(PS_NULL, 0, RGB(0, 0, 0));
+            HGDIOBJ oldBrush = SelectObject(dc, outer);
+            HGDIOBJ oldPen = SelectObject(dc, none);
+            Ellipse(dc, cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2);
+            SelectObject(dc, oldPen);
+            SelectObject(dc, oldBrush);
+            DeleteObject(none);
+            DeleteObject(outer);
+        }
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -543,6 +582,13 @@ void create_overlay_windows() {
     flashClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&flashClass);
 
+    WNDCLASSW fadeClass{};
+    fadeClass.lpfnWndProc = FadeWindowProc;
+    fadeClass.hInstance = instance;
+    fadeClass.lpszClassName = L"TSRealDriverFadeOverlay";
+    fadeClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassW(&fadeClass);
+
     const int screenW = GetSystemMetrics(SM_CXSCREEN);
     const int screenH = GetSystemMetrics(SM_CYSCREEN);
 
@@ -557,6 +603,19 @@ void create_overlay_windows() {
     if (g_flashlightWindow) {
         SetLayeredWindowAttributes(g_flashlightWindow, RGB(255, 0, 255), 52, LWA_COLORKEY | LWA_ALPHA);
         ShowWindow(g_flashlightWindow, SW_HIDE);
+    }
+
+    g_fadeWindow = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"TSRealDriverFadeOverlay",
+        L"",
+        WS_POPUP,
+        0, 0, screenW, screenH,
+        nullptr, nullptr, instance, nullptr);
+
+    if (g_fadeWindow) {
+        SetLayeredWindowAttributes(g_fadeWindow, 0, 0, LWA_ALPHA);
+        ShowWindow(g_fadeWindow, SW_HIDE);
     }
 
     g_promptWindow = CreateWindowExW(
@@ -575,6 +634,10 @@ void create_overlay_windows() {
 }
 
 void destroy_overlay_windows() {
+    if (g_fadeWindow) {
+        DestroyWindow(g_fadeWindow);
+        g_fadeWindow = nullptr;
+    }
     if (g_flashlightWindow) {
         DestroyWindow(g_flashlightWindow);
         g_flashlightWindow = nullptr;
@@ -646,10 +709,26 @@ void update_overlay_visibility() {
     }
 
     if (g_flashlightWindow) {
-        const bool show = state.walking && state.flashlight && g_settings.flashlightEnabled;
+        const bool show = state.walking &&
+            ((state.flashlight && g_settings.flashlightEnabled) || g_settings.shadowEnabled);
         ShowWindow(g_flashlightWindow, show ? SW_SHOWNOACTIVATE : SW_HIDE);
         if (show) InvalidateRect(g_flashlightWindow, nullptr, TRUE);
     }
+}
+
+void transition_fade(bool toBlack) {
+    if (!g_settings.fadeEnabled || !g_fadeWindow) return;
+
+    ShowWindow(g_fadeWindow, SW_SHOWNOACTIVATE);
+    constexpr int steps = 8;
+    for (int i = 0; i <= steps; ++i) {
+        const int phase = toBlack ? i : (steps - i);
+        const BYTE alpha = static_cast<BYTE>(std::clamp(phase * 28, 0, 224));
+        SetLayeredWindowAttributes(g_fadeWindow, 0, alpha, LWA_ALPHA);
+        std::this_thread::sleep_for(12ms);
+    }
+
+    if (!toBlack) ShowWindow(g_fadeWindow, SW_HIDE);
 }
 
 void enter_walk_mode() {
@@ -657,6 +736,8 @@ void enter_walk_mode() {
         set_ui_status(L"DEBUG CAMERA BRIDGE DISABLED");
         return;
     }
+
+    transition_fade(true);
 
     // ETS2/ATS developer camera is normally opened with the top-row 0 key.
     tap_key('0');
@@ -680,6 +761,7 @@ void enter_walk_mode() {
     }
     play_audio(L"door.wav");
     update_overlay_visibility();
+    transition_fade(false);
     log_line(L"Walk mode enabled.");
 }
 
@@ -698,6 +780,7 @@ void leave_walk_mode() {
         g_ui.status = L"IN CAB";
     }
 
+    transition_fade(true);
     tap_key('0');
 
     if (flashlightWasOn) {
@@ -707,6 +790,7 @@ void leave_walk_mode() {
 
     play_audio(L"door.wav");
     update_overlay_visibility();
+    transition_fade(false);
     log_line(L"Walk mode disabled.");
 }
 
