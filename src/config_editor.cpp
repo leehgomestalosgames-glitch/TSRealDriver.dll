@@ -194,6 +194,10 @@ void build_tabs() {
         slider(L"Black screen maximum (ms)", L"camera", L"fade_max_ms", 3500, 0, 6000, 50),
         toggle(L"Automatic driver-door offset", L"camera", L"auto_door_offset", true),
         toggle(L"Block truck controls while walking", L"camera", L"block_game_keys", true),
+        toggle(L"Control free-camera speed through console", L"camera", L"console_speed_control", true),
+        slider(L"Spawn free-camera speed", L"camera", L"spawn_fly_speed", 5.0, 0.5, 20.0, 0.25),
+        slider(L"Walking free-camera speed", L"camera", L"walk_fly_speed", 1.75, 0.25, 8.0, 0.05),
+        slider(L"Restore free-camera speed", L"camera", L"restore_fly_speed", 100.0, 1.0, 200.0, 1.0),
         toggle(L"Use native mouse look", L"camera", L"native_mouse_look", true),
         toggle(L"Follow ground away from truck", L"collision", L"far_ground_estimate", true),
         toggle(L"Buildings and fences block movement", L"collision", L"world_collision", false),
@@ -396,7 +400,7 @@ void paint(HDC dc, const RECT& client) {
     fill(dc, header, PANEL);
     text(dc, 38, 18, L"TS REAL DRIVER", 20, ACCENT, FW_BOLD);
     text(dc, 38, 54, L"Walking, camera, interaction and simulation settings", 10, MUTED);
-    text(dc, client.right - 208, 25, L"v0.4.1 HOTFIX", 9, MUTED, FW_BOLD);
+    text(dc, client.right - 208, 25, L"v0.4.2 CAMERA FIX", 9, MUTED, FW_BOLD);
 
     for (int i = 0; i < static_cast<int>(g_tabs.size()); ++i) {
         const RECT tr = tab_rect(i);
