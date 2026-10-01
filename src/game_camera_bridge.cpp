@@ -546,9 +546,13 @@ bool game_camera_bridge_set_debug_position(double worldX, double worldY, double 
         return false;
     }
 
-    if (!game_camera_bridge_refresh() || !g_status.debugCameraObject) {
-        if (g_status.error.empty()) g_status.error = L"debug camera object is not ready";
-        return false;
+    // During a walk the debug object is stable. Avoid rescanning every camera
+    // slot on every frame; refresh only when the cached object is unavailable.
+    if (!g_status.debugCameraObject || !is_readable(g_status.debugCameraObject + 0x40, 16)) {
+        if (!game_camera_bridge_refresh() || !g_status.debugCameraObject) {
+            if (g_status.error.empty()) g_status.error = L"debug camera object is not ready";
+            return false;
+        }
     }
 
     // SCS stores camera world coordinates as local float X/Y/Z plus two
