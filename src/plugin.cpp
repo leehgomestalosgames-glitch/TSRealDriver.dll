@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -677,6 +678,7 @@ void enter_walk_mode() {
         g_ui.fueling = false;
         g_ui.status = L"WALK MODE";
     }
+    play_audio(L"door.wav");
     update_overlay_visibility();
     log_line(L"Walk mode enabled.");
 }
@@ -703,6 +705,7 @@ void leave_walk_mode() {
         g_ui.flashlight = false;
     }
 
+    play_audio(L"door.wav");
     update_overlay_visibility();
     log_line(L"Walk mode disabled.");
 }
@@ -757,6 +760,7 @@ void handle_fuel_interaction(bool interactNow, bool interactPressed) {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         g_ui.fuelStage = 2;
         g_ui.status = L"FUEL: TAKE NOZZLE / HOLD F AT TANK";
+        play_audio(L"card.wav");
         InvalidateRect(g_promptWindow, nullptr, TRUE);
         return;
     }
@@ -766,6 +770,7 @@ void handle_fuel_interaction(bool interactNow, bool interactPressed) {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         g_ui.fuelStage = 3;
         g_ui.fueling = true;
+        play_audio(L"nozzle.wav");
         g_ui.status = L"FUELING - F IS HOLDING GAME ENTER";
         InvalidateRect(g_promptWindow, nullptr, TRUE);
         return;
@@ -785,6 +790,7 @@ void handle_fuel_interaction(bool interactNow, bool interactPressed) {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         g_ui.fuelStage = 0;
         g_ui.status = L"WALK MODE";
+        play_audio(L"receipt.wav");
         InvalidateRect(g_promptWindow, nullptr, TRUE);
     }
 }
@@ -911,6 +917,7 @@ void worker_main() {
                     g_ui.flashlight = !g_ui.flashlight;
                     g_ui.status = g_ui.flashlight ? L"FLASHLIGHT ON" : L"FLASHLIGHT OFF";
                 }
+                play_audio(L"flashlight.wav");
                 update_overlay_visibility();
             }
 
@@ -989,6 +996,8 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
     g_iniPath = g_moduleDir / L"TSRealDriver.ini";
     g_logPath = g_moduleDir / L"TSRealDriver.log";
     g_configExePath = g_moduleDir / L"TSRealDriverConfig.exe";
+    g_audioDir = g_moduleDir / L"TSRealDriver.audio";
+    ensure_audio_assets();
 
     g_stop = false;
     g_worker = std::thread(worker_main);
