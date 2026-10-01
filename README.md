@@ -2,36 +2,31 @@
 
 Independent ETS2/ATS driver-walking plug-in for the TSMS ecosystem.
 
-## TS Real Drive 0.5.2 — Camera Compatibility Test
+## TS Real Drive 0.5.4 — Grounded Walker Pose
 
-This build changes the walk entry path based on the supplied reference behavior and the user's ATS test.
+This build replaces free-camera flying movement with an independent walker position.
 
-- F10 no longer simulates Numpad 0 to enter walk mode.
-- TS Real Drive resolves the game's `camera_manager`, recognizes camera classes through the game's type-name helper with an MSVC RTTI fallback, finds the `debug_camera` slot, writes the requested camera slot through the manager, and waits for the game to switch.
-- The player's own Numpad-0 free-camera mode remains separate.
-- If native camera resolution/switch fails, walk mode is not enabled and no fake footsteps are started.
-- Prototype footsteps are muted by default in this build; other interaction audio remains available.
-- The temporary door-position pulse remains only after the native debug-camera switch; exact camera pose writing is the next resolver step.
+- F10 resolves the live truck/door position from telemetry before walk mode can start.
+- After the debug camera is selected, TS Real Drive writes the walker's SCS sector/local world position directly into the debug-camera pose.
+- A stale debug-camera position is never accepted as the initial walk position; if live truck placement or the pose write is unavailable, entry aborts instead of sending the camera to an old city.
+- W/A/S/D update the walker horizontally; they no longer drive Numpad 8/2/4/6 free-camera axes.
+- Shift multiplies only the internal walker speed and therefore returns immediately to the exact walking speed when released.
+- Mouse wheel changes an internal speed scale and is blocked from changing the game's free-camera speed while walking.
+- The first ground plane is derived from the truck door/head position and configured eye height, so looking up/down no longer turns forward movement into flying.
+- Ctrl changes walker eye height and Space uses walker gravity/jump velocity instead of Numpad vertical camera movement.
+- Full road/terrain raycast following and step/collision resolution remain separate compatibility work; 0.5.4 intentionally prioritizes deterministic truck-door spawn and non-flying movement.
 
 ### Runtime
 
 - `F10` leave / return to truck.
-- Exit is blocked when TSMS telemetry says the truck is still moving or the parking brake is not set.
-- Uses the ETS2/ATS developer/free camera as the current movement backend.
-- `W A S D` -> free-camera forward/back/left/right using Numpad 8/2/4/6.
-- Walking keys are isolated from normal truck controls while walk mode is active.
-- `Shift` run-speed boost.
-- Mouse wheel changes walking/free-camera speed; middle click resets the manual speed offset.
-- `Ctrl` crouch.
-- `Space` jump.
-- `Q / E` lower/raise eye height.
-- `R` eye-height reset.
-- `F8` building/ghost-walk state.
-- `~` pauses the walking input bridge while using the game console.
-- Head bob / side sway, footsteps, running breath, door sound and fade transition.
-- Right mouse button flashlight overlay and `G` beam-size cycle.
-- Walking shadow fallback overlay.
-- Low-level mouse tracking maintains an estimated walker heading/position for contextual interactions.
+- Exit is blocked when telemetry says the truck is moving or the parking brake is not set.
+- `W A S D` walk on the horizontal walker plane.
+- `Shift` sprint; releasing it returns to base walking speed.
+- Mouse wheel changes the walker speed scale; middle click resets it.
+- `Ctrl` crouch and `Space` jump.
+- `R` resets eye height.
+- Walking keys remain isolated from normal truck controls while walk mode is active.
+- Native game mouse look remains available while the walker position is controlled independently.
 
 ### TSMS telemetry integration
 
