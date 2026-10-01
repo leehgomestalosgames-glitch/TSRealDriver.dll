@@ -1132,7 +1132,7 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
 
     g_stop = false;
     g_worker = std::thread(worker_main);
-    log_line(L"TSRealDriver 0.2 initialized.");
+    log_line(L"TSRealDriver 0.3 initialized.");
     return 0;
 }
 
