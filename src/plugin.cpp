@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <mmsystem.h>
+#include <mmsystem.h>\n\n#include "native_game_bridge.hpp"
 
 namespace {
 
@@ -1130,6 +1130,9 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
     g_audioDir = g_moduleDir / L"TSRealDriver.audio";
     ensure_audio_assets();
 
+    native_game_bridge_initialize();
+    log_line(native_game_bridge_report());
+
     g_stop = false;
     g_worker = std::thread(worker_main);
     log_line(L"TSRealDriver 0.3 initialized.");
@@ -1141,5 +1144,6 @@ extern "C" __declspec(dllexport) void scs_telemetry_shutdown() {
     if (g_worker.joinable()) {
         g_worker.join();
     }
+    native_game_bridge_shutdown();
     log_line(L"TSRealDriver shutdown.");
 }
