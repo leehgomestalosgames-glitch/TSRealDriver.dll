@@ -401,7 +401,7 @@ void paint(HDC dc, const RECT& client) {
     fill(dc, header, PANEL);
     text(dc, 38, 18, L"TS REAL DRIVE", 20, ACCENT, FW_BOLD);
     text(dc, 38, 54, L"Walking, camera, interaction and simulation settings", 10, MUTED);
-    text(dc, client.right - 208, 25, L"v0.5.3 INPUT + CAMERA", 9, MUTED, FW_BOLD);
+    text(dc, client.right - 208, 25, L"v0.5.4 WALKER POSE", 9, MUTED, FW_BOLD);
 
     for (int i = 0; i < static_cast<int>(g_tabs.size()); ++i) {
         const RECT tr = tab_rect(i);
