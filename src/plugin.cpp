@@ -1065,7 +1065,7 @@ LRESULT CALLBACK PromptWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         const COLORREF white = RGB(242, 242, 244);
         const COLORREF gray = RGB(175, 177, 185);
 
-        draw_text(dc, 18, 12, L"TS REAL DRIVER", 16, gold, true);
+        draw_text(dc, 18, 12, L"TS REAL DRIVE", 16, gold, true);
         draw_text(dc, 18, 42, state.status.c_str(), 11, white, true);
 
         if (state.walking) {
@@ -1961,7 +1961,7 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
 
     g_stop = false;
     g_worker = std::thread(worker_main);
-    log_line(L"TSRealDriver 0.5.1 initialized.");
+    log_line(L"TSRealDriver 0.5.2 initialized.");
     return 0;
 }
 
