@@ -1,49 +1,75 @@
 # TSRealDriver.dll
 
-Clean-room ETS2/ATS walking/driver-interaction plugin.
+Independent ETS2/ATS driver-walking plug-in built from scratch.
 
-## Goal
+## Version 0.2
 
-TSRealDriver is an independent plugin inspired by the *type of experience* offered by walking plugins: leave the cab, move with familiar keys, interact around the truck, configure behaviour in-game, and later add fuel-stop roleplay.
+This build now contains real runtime behavior inside `TSRealDriver.dll`, not only configuration placeholders.
 
-This repository does **not** contain TM Real Walk code, assets, licence/token logic, or copied proprietary resources.
+Implemented in the DLL:
 
-## Current milestone
+- `F10` toggles walking mode.
+- Walking mode requests the game's developer/free camera with the top-row `0` key.
+- Automatic small exit offset toward the driver's door.
+- `W A S D` drive the game free-camera movement controls.
+- `Shift` increases/decreases free-camera movement speed while held.
+- `Space` performs a short up/hang/down jump cycle.
+- `Ctrl` lowers eye height while held and raises it again on release.
+- `Q / E` lower/raise the eye manually.
+- `R` performs an eye-height reset pulse.
+- `F` returns to the cab when normal walk interaction is active.
+- `F8` toggles building/ghost-walk status.
+- `~` pauses/resumes TSRealDriver walking input for console use.
+- Right mouse button toggles the TSRealDriver flashlight overlay.
+- `G` cycles flashlight beam size.
+- `Ctrl+F10` opens `TSRealDriverConfig.exe`.
+- `TSRealDriver.ini` is hot-reloaded when saved.
+- On-screen TSRealDriver prompts/status overlay.
+- `F7` arms the current fuel-roleplay flow:
+  1. TS Fleet card
+  2. nozzle
+  3. hold `F` to hold the game's Enter key while fueling
+  4. receipt
+- Local `TSRealDriver.log` runtime log.
 
-**v0.1 bootstrap**
+## Important game setting
 
-- Windows x64 DLL named `TSRealDriver.dll`
-- SCS telemetry-plugin entry points
-- `F10` debug-camera bridge
-- WASD/Q/E remap while walk mode is active
-- `F` returns to the cab in the bootstrap bridge
-- `Ctrl+F10` opens a native configuration editor
-- hot-reloadable `TSRealDriver.ini`
-- local logging
-- GitHub Actions Windows build
+The walking bridge uses the developer/free camera already present in ETS2/ATS.
 
-Advanced systems (ground following, collision, gravity/jump, flashlight, shadow, on-screen prompts, fuel-card/nozzle/receipt flow, polished in-game settings panel) are represented in the config/roadmap and will be implemented independently in later milestones.
-
-## Game requirement
-
-The bootstrap walking bridge uses the game's developer/free camera. In the game profile's `config.cfg`, enable:
+In the game's `config.cfg`:
 
 ```
 uset g_developer "1"
 ```
 
-The game console is optional for TSRealDriver itself, but useful for debugging.
+The console can also be enabled for debugging, but TSRealDriver specifically depends on the developer camera.
 
 ## Install
 
-1. Build/download the Windows x64 artifact.
-2. Copy `TSRealDriver.dll` and `TSRealDriver.ini` to:
-   - ETS2: `bin/win_x64/plugins/`
-   - ATS: `bin/win_x64/plugins/`
-3. Start the game and load a profile.
-4. Press `F10` to toggle the bootstrap walking bridge.
-5. Press `Ctrl+F10` to edit configuration.
+Copy these files from the Windows x64 build artifact into the game's x64 plug-ins folder:
 
-## Safety/design rule
+```
+TSRealDriver.dll
+TSRealDriver.ini
+TSRealDriverConfig.exe
+```
 
-We do not bypass or remove another developer's licence system. TSRealDriver is built as a separate implementation with its own branding and code.
+Typical folder:
+
+```
+<game>\bin\win_x64\plugins\
+```
+
+## Configuration
+
+Run `TSRealDriverConfig.exe` or press `Ctrl+F10` while the plug-in is loaded.
+
+The current editor is functional but intentionally simple. The next UI pass will replace it with the dark tabbed TSRealDriver panel based on the reference layout supplied during development.
+
+## Clean-room boundary
+
+TSRealDriver does not contain TM Real Walk source code, licence/token logic, private server endpoints, copied proprietary images, copied sounds, or copied menu artwork. The controls and user-facing interaction categories are being implemented independently with TSRealDriver code and branding.
+
+## Current limitations
+
+The current walking engine is built on the game's developer/free camera rather than a game-memory camera controller. Because of that, exact ground collision, truck-door position, world-space hand models, true in-world flashlight lighting, and per-truck fuel-tank detection still require a deeper game-integration layer and testing against ETS2/ATS builds.
