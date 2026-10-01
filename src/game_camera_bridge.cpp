@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -537,6 +538,59 @@ bool game_camera_bridge_request_slot(int slot, unsigned timeoutMs) {
 bool game_camera_bridge_request_debug(unsigned timeoutMs) {
     if (!game_camera_bridge_refresh()) return false;
     return game_camera_bridge_request_slot(g_status.debugCameraSlot, timeoutMs);
+}
+
+bool game_camera_bridge_set_debug_position(double worldX, double worldY, double worldZ) {
+    if (!std::isfinite(worldX) || !std::isfinite(worldY) || !std::isfinite(worldZ)) {
+        g_status.error = L"debug camera position is not finite";
+        return false;
+    }
+
+    if (!game_camera_bridge_refresh() || !g_status.debugCameraObject) {
+        if (g_status.error.empty()) g_status.error = L"debug camera object is not ready";
+        return false;
+    }
+
+    // SCS stores camera world coordinates as local float X/Y/Z plus two
+    // signed 16-bit 512 m sector coordinates. The 16-byte position block is
+    // the first half of the camera pose at debug_camera + 0x40. Keep the
+    // following quaternion untouched so native mouse look remains owned by
+    // the game.
+    constexpr double sectorSize = 512.0;
+    const double sectorXd = std::floor(worldX / sectorSize);
+    const double sectorZd = std::floor(worldZ / sectorSize);
+
+    if (sectorXd < -32768.0 || sectorXd > 32767.0 ||
+        sectorZd < -32768.0 || sectorZd > 32767.0) {
+        g_status.error = L"debug camera world position is outside sector range";
+        return false;
+    }
+
+#pragma pack(push, 1)
+    struct CameraPositionBlock {
+        float localX;
+        float y;
+        float localZ;
+        std::int16_t sectorX;
+        std::int16_t sectorZ;
+    };
+#pragma pack(pop)
+    static_assert(sizeof(CameraPositionBlock) == 16);
+
+    CameraPositionBlock pose{};
+    pose.localX = static_cast<float>(worldX - sectorXd * sectorSize);
+    pose.y = static_cast<float>(worldY);
+    pose.localZ = static_cast<float>(worldZ - sectorZd * sectorSize);
+    pose.sectorX = static_cast<std::int16_t>(sectorXd);
+    pose.sectorZ = static_cast<std::int16_t>(sectorZd);
+
+    if (!safe_write(g_status.debugCameraObject + 0x40, &pose, sizeof(pose))) {
+        g_status.error = L"debug camera position write failed";
+        return false;
+    }
+
+    g_status.error.clear();
+    return true;
 }
 
 int game_camera_bridge_current_slot() {
