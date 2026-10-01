@@ -49,10 +49,18 @@ struct Settings {
     int fuelModeKey = VK_F7;
     int consoleKey = VK_OEM_3;
 
-    double walkSpeed = 1.75;
+    double walkSpeed = 1.50;
     double sprintMultiplier = 2.60;
     double backwardFactor = 0.70;
     double strafeFactor = 0.90;
+    double eyeHeight = 1.70;
+    double crouchEyeHeight = 1.00;
+    double jumpStrength = 4.80;
+    double gravity = 9.81;
+    double speedWheelStep = 0.12;
+    double speedScaleMin = 0.25;
+    double speedScaleMax = 3.00;
+    double speedScaleDefault = 1.00;
     double crouchDropSeconds = 0.16;
     double jumpUpSeconds = 0.12;
     double jumpHangSeconds = 0.12;
@@ -145,6 +153,10 @@ double g_walkerX = 0.0;
 double g_walkerY = 0.0;
 double g_walkerZ = 0.0;
 double g_walkerYaw = 0.0;
+double g_walkerGroundY = 0.0;
+double g_walkerVerticalVelocity = 0.0;
+double g_walkSpeedScale = 1.0;
+bool g_walkerGrounded = true;
 bool g_walkerPositionValid = false;
 int g_previousCameraSlot = -1;
 
@@ -256,10 +268,18 @@ void load_settings() {
     g_settings.fuelModeKey = parse_ini_int(L"keys", L"fuel_mode", VK_F7);
     g_settings.consoleKey = parse_ini_int(L"keys", L"console", VK_OEM_3);
 
-    g_settings.walkSpeed = parse_ini_double(L"movement", L"walk_speed", 1.75);
+    g_settings.walkSpeed = parse_ini_double(L"movement", L"walk_speed", 1.50);
     g_settings.sprintMultiplier = parse_ini_double(L"movement", L"sprint_multiplier", 2.60);
     g_settings.backwardFactor = parse_ini_double(L"movement", L"backward_factor", 0.70);
     g_settings.strafeFactor = parse_ini_double(L"movement", L"strafe_factor", 0.90);
+    g_settings.eyeHeight = parse_ini_double(L"movement", L"eye_height", 1.70);
+    g_settings.crouchEyeHeight = parse_ini_double(L"movement", L"crouch_eye_height", 1.00);
+    g_settings.jumpStrength = parse_ini_double(L"movement", L"jump_strength", 4.80);
+    g_settings.gravity = parse_ini_double(L"movement", L"gravity", 9.81);
+    g_settings.speedWheelStep = parse_ini_double(L"movement", L"speed_wheel_step", 0.12);
+    g_settings.speedScaleMin = parse_ini_double(L"movement", L"speed_scale_min", 0.25);
+    g_settings.speedScaleMax = parse_ini_double(L"movement", L"speed_scale_max", 3.00);
+    g_settings.speedScaleDefault = parse_ini_double(L"movement", L"speed_scale", 1.00);
     g_settings.crouchDropSeconds = parse_ini_double(L"movement", L"crouch_drop_seconds", 0.16);
     g_settings.jumpUpSeconds = parse_ini_double(L"movement", L"jump_up_seconds", 0.12);
     g_settings.jumpHangSeconds = parse_ini_double(L"movement", L"jump_hang_seconds", 0.12);
@@ -674,6 +694,17 @@ LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam) {
             if (wParam == WM_MOUSEWHEEL) {
                 const short delta = static_cast<short>(HIWORD(info->mouseData));
                 if (delta != 0) g_mouseWheel.fetch_add(delta / WHEEL_DELTA);
+
+                bool walking = false;
+                bool paused = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_stateMutex);
+                    walking = g_ui.walking;
+                    paused = g_ui.paused;
+                }
+                if (walking && !paused) {
+                    return 1; // keep the game's free-camera speed untouched
+                }
             }
         }
     }
@@ -843,11 +874,30 @@ void initialize_walker_world_position() {
     }
 
     const WorldPoint d = door_point();
+
+    // Start beside the driver's seat, but derive a standing ground plane from
+    // the cabin/head height. This keeps the first outside frame vertically
+    // continuous while giving the walker a fixed feet/eye relationship.
     g_walkerX = d.x;
-    g_walkerY = std::max(d.y, g_gameState.worldY + 0.2);
     g_walkerZ = d.z;
+    g_walkerGroundY = d.y - g_settings.eyeHeight;
+    g_walkerY = g_walkerGroundY + g_settings.eyeHeight;
     g_walkerYaw = game_heading_radians();
+    g_walkerVerticalVelocity = 0.0;
+    g_walkerGrounded = true;
+    g_walkSpeedScale = std::clamp(
+        g_settings.speedScaleDefault,
+        g_settings.speedScaleMin,
+        g_settings.speedScaleMax);
     g_walkerPositionValid = true;
+
+    std::wostringstream out;
+    out << L"Walker spawn: truck=("
+        << g_gameState.worldX << L"," << g_gameState.worldY << L"," << g_gameState.worldZ
+        << L") door=(" << d.x << L"," << d.y << L"," << d.z
+        << L") walker=(" << g_walkerX << L"," << g_walkerY << L"," << g_walkerZ
+        << L") ground=" << g_walkerGroundY;
+    log_line(out.str());
 }
 
 void update_walker_world_estimate(double dt) {
@@ -874,9 +924,11 @@ void update_walker_world_estimate(double dt) {
         right /= magnitude;
     }
 
+    const bool sprinting = key_down(g_settings.sprintKey);
     const double speed =
         g_settings.walkSpeed *
-        (key_down(g_settings.sprintKey) ? std::max(1.0, g_settings.sprintMultiplier) : 1.0);
+        g_walkSpeedScale *
+        (sprinting ? std::max(1.0, g_settings.sprintMultiplier) : 1.0);
 
     const double fx = std::sin(g_walkerYaw);
     const double fz = std::cos(g_walkerYaw);
@@ -885,6 +937,24 @@ void update_walker_world_estimate(double dt) {
 
     g_walkerX += (fx * forward + rx * right) * speed * dt;
     g_walkerZ += (fz * forward + rz * right) * speed * dt;
+
+    const double standingEye = std::max(0.25, g_settings.eyeHeight);
+    const double crouchEye = std::clamp(g_settings.crouchEyeHeight, 0.25, standingEye);
+    const double baseEye = key_down(g_settings.crouchKey) ? crouchEye : standingEye;
+
+    if (!g_walkerGrounded) {
+        g_walkerVerticalVelocity -= std::max(0.1, g_settings.gravity) * dt;
+        g_walkerY += g_walkerVerticalVelocity * dt;
+
+        const double floorY = g_walkerGroundY + standingEye;
+        if (g_walkerY <= floorY) {
+            g_walkerY = floorY;
+            g_walkerVerticalVelocity = 0.0;
+            g_walkerGrounded = true;
+        }
+    } else {
+        g_walkerY = g_walkerGroundY + baseEye;
+    }
 }
 
 enum class InteractionKind {
@@ -1414,56 +1484,44 @@ void enter_walk_mode() {
         return;
     }
 
-    transition_fade(true);
-
-    // First let the game itself activate Numpad-0 free camera. Going through
-    // the game's normal camera command initializes/synchronizes the debug camera
-    // better than writing only the requested slot, which can resurrect an old
-    // free-camera position from another place on the map.
-    game_camera_bridge_refresh();
-    g_previousCameraSlot = game_camera_bridge_current_slot();
-
-    log_line(game_camera_bridge_report());
-
-    bool debugReady = false;
-    const auto debugStatus = game_camera_bridge_status();
-    if (debugStatus.debugCameraSlot >= 0) {
-        tap_game_key(VK_NUMPAD0);
-
-        const ULONGLONG start = GetTickCount64();
-        while (GetTickCount64() - start <= 1200) {
-            const int current = game_camera_bridge_current_slot();
-            if (current == debugStatus.debugCameraSlot) {
-                debugReady = true;
-                break;
-            }
-            Sleep(20);
-        }
-    }
-
-    if (debugReady) {
-        log_line(L"Walk enter: debug camera activated through the game's Numpad-0 path.");
-    } else {
-        log_line(L"Walk enter: Numpad-0 path did not switch cameras; falling back to native slot request.");
-        if (!game_camera_bridge_request_debug(1200)) {
-            log_line(std::wstring(L"Walk enter failed: ") + game_camera_bridge_status().error);
-            log_line(game_camera_bridge_census());
-            transition_fade(false);
-            set_ui_status(L"NATIVE WALK CAMERA NOT READY");
-            return;
-        }
-        log_line(L"Walk enter: native debug camera fallback requested successfully.");
-    }
-
-    // Step sideways out of the driver's side without forcing the camera down
-    // under the truck. Vertical placement will stay at the game's camera height.
-    if (g_settings.autoDoorOffset) {
-        set_game_flyspeed(g_settings.spawnFlySpeed);
-        hold_game_key_for(VK_NUMPAD4, 260ms);
-        set_game_flyspeed(g_settings.walkFlySpeed);
+    if (!g_haveTelemetry) {
+        log_line(L"Walk enter failed: live truck world placement is not available.");
+        set_ui_status(L"TRUCK POSITION NOT READY");
+        return;
     }
 
     initialize_walker_world_position();
+    if (!g_walkerPositionValid) {
+        set_ui_status(L"WALKER POSITION NOT READY");
+        return;
+    }
+
+    transition_fade(true);
+
+    game_camera_bridge_refresh();
+    g_previousCameraSlot = game_camera_bridge_current_slot();
+    log_line(game_camera_bridge_report());
+
+    if (!game_camera_bridge_request_debug(1200)) {
+        log_line(std::wstring(L"Walk enter failed: ") + game_camera_bridge_status().error);
+        log_line(game_camera_bridge_census());
+        transition_fade(false);
+        set_ui_status(L"NATIVE WALK CAMERA NOT READY");
+        return;
+    }
+
+    if (!game_camera_bridge_set_debug_position(g_walkerX, g_walkerY, g_walkerZ)) {
+        log_line(std::wstring(L"Walk enter failed: could not place walker camera: ") +
+                 game_camera_bridge_status().error);
+        if (g_previousCameraSlot >= 0) {
+            game_camera_bridge_request_slot(g_previousCameraSlot, 500);
+        }
+        transition_fade(false);
+        set_ui_status(L"WALKER CAMERA POSITION FAILED");
+        return;
+    }
+
+    log_line(L"Walk enter: debug camera placed at live truck-door walker position.");
 
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -1497,8 +1555,6 @@ void leave_walk_mode() {
     }
 
     transition_fade(true);
-    set_game_flyspeed(g_settings.restoreFlySpeed);
-
     if (g_previousCameraSlot >= 0) {
         bool restored = false;
 
@@ -1532,6 +1588,12 @@ void leave_walk_mode() {
     }
 
     g_walkerPositionValid = false;
+    g_walkerVerticalVelocity = 0.0;
+    g_walkerGrounded = true;
+    g_walkSpeedScale = std::clamp(
+        g_settings.speedScaleDefault,
+        g_settings.speedScaleMin,
+        g_settings.speedScaleMax);
     play_audio(L"door.wav");
     update_overlay_visibility();
     transition_fade(false);
@@ -1539,21 +1601,10 @@ void leave_walk_mode() {
 }
 
 void do_jump() {
+    if (!g_walkerPositionValid || !g_walkerGrounded) return;
+    g_walkerVerticalVelocity = std::max(0.1, g_settings.jumpStrength);
+    g_walkerGrounded = false;
     set_ui_status(L"JUMP");
-    send_key(VK_NUMPAD9, true);
-    std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::duration<double>(g_settings.jumpUpSeconds)));
-    send_key(VK_NUMPAD9, false);
-
-    std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::duration<double>(g_settings.jumpHangSeconds)));
-
-    send_key(VK_NUMPAD3, true);
-    std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::duration<double>(g_settings.jumpDownSeconds)));
-    send_key(VK_NUMPAD3, false);
-
-    set_ui_status(L"WALK MODE");
 }
 
 void begin_fuel_roleplay() {
@@ -1633,7 +1684,6 @@ void worker_main() {
 
     Edge f10Edge;
     Edge interactEdge;
-    Edge sprintEdge;
     Edge jumpEdge;
     Edge crouchEdge;
     Edge flashEdge;
@@ -1652,7 +1702,6 @@ void worker_main() {
     auto lastFrame = Clock::now();
     Clock::time_point sprintStarted{};
     int bobPhase = 1;
-    int manualSpeedOffset = 0;
     bool lastTrailerAttached = g_gameState.trailerAttached;
 
     while (!g_stop.load()) {
@@ -1716,41 +1765,36 @@ void worker_main() {
         if (walking && !paused) {
             update_walker_world_estimate(dt);
 
-            // The game's developer/free-camera movement axes.
-            mirror_key(g_settings.forwardKey, VK_NUMPAD8, g_sentForward);
-            mirror_key(g_settings.backwardKey, VK_NUMPAD2, g_sentBackward);
-            mirror_key(g_settings.leftKey, VK_NUMPAD4, g_sentLeft);
-            mirror_key(g_settings.rightKey, VK_NUMPAD6, g_sentRight);
-            mirror_key(g_settings.eyeUpKey, VK_NUMPAD9, g_sentEyeUp);
-            mirror_key(g_settings.eyeDownKey, VK_NUMPAD3, g_sentEyeDown);
+            // The camera follows our walker world position directly. W/A/S/D no
+            // longer drive the game's free-camera axes, so looking up/down cannot
+            // make the player fly or sink through the ground.
+            if (!game_camera_bridge_set_debug_position(g_walkerX, g_walkerY, g_walkerZ)) {
+                log_line(std::wstring(L"Walker camera update failed: ") +
+                         game_camera_bridge_status().error);
+                set_ui_status(L"WALKER CAMERA LOST");
+            }
 
             const int manualWheel = g_mouseWheel.exchange(0);
             if (manualWheel != 0) {
-                manualSpeedOffset += manualWheel;
-                set_ui_status(manualWheel > 0 ? L"WALK SPEED +" : L"WALK SPEED -");
+                g_walkSpeedScale = std::clamp(
+                    g_walkSpeedScale + static_cast<double>(manualWheel) * g_settings.speedWheelStep,
+                    g_settings.speedScaleMin,
+                    g_settings.speedScaleMax);
+                std::wostringstream speedStatus;
+                speedStatus << L"WALK SPEED x" << g_walkSpeedScale;
+                set_ui_status(speedStatus.str());
             }
 
             const bool speedResetNow = key_down(g_settings.speedResetKey);
-            if (speedResetEdge.pressed(speedResetNow) && manualSpeedOffset != 0) {
-                send_wheel(-manualSpeedOffset);
-                manualSpeedOffset = 0;
+            if (speedResetEdge.pressed(speedResetNow)) {
+                g_walkSpeedScale = std::clamp(
+                    g_settings.speedScaleDefault,
+                    g_settings.speedScaleMin,
+                    g_settings.speedScaleMax);
                 set_ui_status(L"WALK SPEED RESET");
             }
 
             const bool sprintNow = key_down(g_settings.sprintKey);
-            if (sprintEdge.pressed(sprintNow)) {
-                send_wheel(g_settings.sprintWheelNotches);
-                set_ui_status(L"RUN");
-            }
-
-            static bool sprintHeld = false;
-            if (sprintNow != sprintHeld) {
-                if (!sprintNow && sprintHeld) {
-                    send_wheel(-g_settings.sprintWheelNotches);
-                    set_ui_status(L"WALK MODE");
-                }
-                sprintHeld = sprintNow;
-            }
 
             const bool movingNow =
                 key_down(g_settings.forwardKey) ||
@@ -1761,7 +1805,8 @@ void worker_main() {
             const auto motionNow = Clock::now();
             if (movingNow) {
                 const double speed = std::max(0.25,
-                    g_settings.walkSpeed * (sprintNow ? std::max(1.0, g_settings.sprintMultiplier) : 1.0));
+                    g_settings.walkSpeed * g_walkSpeedScale *
+                    (sprintNow ? std::max(1.0, g_settings.sprintMultiplier) : 1.0));
                 const double stride = std::max(0.25,
                     g_settings.stepLength * (sprintNow ? std::max(0.40, g_settings.runStride) : 1.0));
                 const double intervalSeconds = std::clamp(stride / speed, 0.12, 1.20);
@@ -1802,19 +1847,11 @@ void worker_main() {
 
             const bool crouchNow = key_down(g_settings.crouchKey);
             if (crouchEdge.pressed(crouchNow)) {
-                send_key(VK_NUMPAD3, true);
-                std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::duration<double>(g_settings.crouchDropSeconds)));
-                send_key(VK_NUMPAD3, false);
                 set_ui_status(L"CROUCH");
             }
 
             static bool crouchHeld = false;
             if (!crouchNow && crouchHeld) {
-                send_key(VK_NUMPAD9, true);
-                std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::duration<double>(g_settings.crouchDropSeconds)));
-                send_key(VK_NUMPAD9, false);
                 set_ui_status(L"WALK MODE");
             }
             crouchHeld = crouchNow;
@@ -1826,7 +1863,9 @@ void worker_main() {
 
             const bool resetEyeNow = key_down(g_settings.eyeResetKey);
             if (resetEyeEdge.pressed(resetEyeNow)) {
-                hold_key_for(VK_NUMPAD9, 120ms);
+                g_walkerVerticalVelocity = 0.0;
+                g_walkerGrounded = true;
+                g_walkerY = g_walkerGroundY + g_settings.eyeHeight;
                 set_ui_status(L"EYE HEIGHT RESET");
             }
 
@@ -2029,7 +2068,7 @@ extern "C" __declspec(dllexport) int scs_telemetry_init(unsigned int, const void
 
     g_stop = false;
     g_worker = std::thread(worker_main);
-    log_line(L"TSRealDriver 0.5.3 initialized.");
+    log_line(L"TSRealDriver 0.5.4 initialized.");
     return 0;
 }
 
