@@ -217,7 +217,8 @@ void build_tabs() {
     }});
 
     g_tabs.push_back({L"SOUND", {
-        toggle(L"Footstep / door / flashlight sounds", L"sound", L"enabled", true),
+        toggle(L"Door / interaction sounds", L"sound", L"enabled", true),
+        toggle(L"Footstep sounds", L"sound", L"footsteps", false),
         toggle(L"Breathing sounds", L"sound", L"breathing", true),
         slider(L"Master volume", L"sound", L"master_volume", 0.70, 0.0, 1.0, 0.05),
         slider(L"Footstep volume", L"sound", L"footstep_volume", 0.75, 0.0, 1.0, 0.05),
@@ -400,7 +401,7 @@ void paint(HDC dc, const RECT& client) {
     fill(dc, header, PANEL);
     text(dc, 38, 18, L"TS REAL DRIVER", 20, ACCENT, FW_BOLD);
     text(dc, 38, 54, L"Walking, camera, interaction and simulation settings", 10, MUTED);
-    text(dc, client.right - 208, 25, L"v0.4.2 CAMERA FIX", 9, MUTED, FW_BOLD);
+    text(dc, client.right - 208, 25, L"v0.5 NATIVE CAMERA", 9, MUTED, FW_BOLD);
 
     for (int i = 0; i < static_cast<int>(g_tabs.size()); ++i) {
         const RECT tr = tab_rect(i);
