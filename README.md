@@ -2,7 +2,14 @@
 
 Independent ETS2/ATS driver-walking plug-in for the TSMS ecosystem.
 
-## TSRealDriver 0.4 — Closed Test Build
+## TSRealDriver 0.4.1 — Cabin / Audio Hotfix
+
+This hotfix addresses the first in-game ATS test.
+
+- Developer/free camera toggle now uses **Numpad 0** instead of the top-row 0 key.
+- Walking reverse remains mapped to Numpad 2.
+- Prototype 8 kHz synthetic footsteps were replaced by regenerated 44.1 kHz, lower-volume multi-component footsteps with left/right variation.
+- Other generated interaction sounds were also regenerated at 44.1 kHz.
 
 This build is intended to be installed and tested as one coherent package before we continue the TSMS integration work.
 
