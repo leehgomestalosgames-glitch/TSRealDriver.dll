@@ -349,7 +349,7 @@ void send_wheel(int notches) {
 }
 
 
-void write_wave_file(const std::filesystem::path& path, const std::vector<short>& samples, int sampleRate = 8000) {
+void write_wave_file(const std::filesystem::path& path, const std::vector<short>& samples, int sampleRate = 44100) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return;
 
@@ -379,54 +379,116 @@ void write_wave_file(const std::filesystem::path& path, const std::vector<short>
     out.write(reinterpret_cast<const char*>(samples.data()), static_cast<std::streamsize>(dataSize));
 }
 
-std::vector<short> synth_sound(double seconds, double frequency, double noiseAmount, double amplitude) {
-    constexpr int sampleRate = 8000;
+std::vector<short> synth_footstep(bool running, int variant) {
+    constexpr int sampleRate = 44100;
+    const double seconds = running ? 0.16 : 0.20;
     const int count = std::max(1, static_cast<int>(seconds * sampleRate));
-    std::vector<short> data(static_cast<size_t>(count));
+    std::vector<short> data(static_cast<std::size_t>(count));
 
-    std::mt19937 rng(0x54535244u + static_cast<unsigned>(frequency));
+    std::mt19937 rng(0x54535244u + static_cast<unsigned>(variant * 97 + (running ? 1000 : 0)));
     std::uniform_real_distribution<double> noise(-1.0, 1.0);
+
+    double low = 0.0;
+    double mid = 0.0;
 
     for (int i = 0; i < count; ++i) {
         const double t = i / static_cast<double>(sampleRate);
-        const double envelope = std::max(0.0, 1.0 - i / static_cast<double>(count));
-        const double tone = std::sin(6.283185307179586 * frequency * t);
-        const double sample = (tone * (1.0 - noiseAmount) + noise(rng) * noiseAmount) * envelope * amplitude;
-        data[static_cast<size_t>(i)] = static_cast<short>(std::clamp(sample, -1.0, 1.0) * 32767.0);
+
+        const double heelEnv = std::exp(-t * (running ? 34.0 : 28.0));
+        const double toeT = std::max(0.0, t - (running ? 0.045 : 0.060));
+        const double toeEnv = toeT > 0.0 ? std::exp(-toeT * 38.0) : 0.0;
+
+        const double n = noise(rng);
+        low += 0.045 * (n - low);
+        mid += 0.18 * (n - mid);
+
+        const double thumpHz = running ? (82.0 + variant * 3.0) : (68.0 + variant * 2.0);
+        const double thump =
+            std::sin(6.283185307179586 * thumpHz * t) * heelEnv * (running ? 0.20 : 0.16);
+
+        const double sole =
+            (0.72 * low + 0.28 * mid) * heelEnv * (running ? 0.20 : 0.16);
+
+        const double toe =
+            (mid - low) * toeEnv * (running ? 0.12 : 0.10);
+
+        const double sample = std::clamp(thump + sole + toe, -0.55, 0.55);
+        data[static_cast<std::size_t>(i)] = static_cast<short>(sample * 32767.0);
     }
+
+    return data;
+}
+
+std::vector<short> synth_effect(double seconds, double lowHz, double highHz, double noiseMix, double amplitude, int seed) {
+    constexpr int sampleRate = 44100;
+    const int count = std::max(1, static_cast<int>(seconds * sampleRate));
+    std::vector<short> data(static_cast<std::size_t>(count));
+
+    std::mt19937 rng(0x53524400u + static_cast<unsigned>(seed));
+    std::uniform_real_distribution<double> noise(-1.0, 1.0);
+
+    double filtered = 0.0;
+    for (int i = 0; i < count; ++i) {
+        const double t = i / static_cast<double>(sampleRate);
+        const double phase = t / seconds;
+        const double env = std::pow(std::max(0.0, 1.0 - phase), 2.0);
+        const double freq = lowHz + (highHz - lowHz) * phase;
+
+        const double n = noise(rng);
+        filtered += 0.12 * (n - filtered);
+
+        const double tone = std::sin(6.283185307179586 * freq * t);
+        const double sample =
+            (tone * (1.0 - noiseMix) + filtered * noiseMix) * env * amplitude;
+
+        data[static_cast<std::size_t>(i)] =
+            static_cast<short>(std::clamp(sample, -0.8, 0.8) * 32767.0);
+    }
+
+    return data;
+}
+
+std::vector<short> synth_breath() {
+    constexpr int sampleRate = 44100;
+    constexpr double seconds = 0.70;
+    const int count = static_cast<int>(seconds * sampleRate);
+    std::vector<short> data(static_cast<std::size_t>(count));
+
+    std::mt19937 rng(0xBEEA7u);
+    std::uniform_real_distribution<double> noise(-1.0, 1.0);
+    double filtered = 0.0;
+
+    for (int i = 0; i < count; ++i) {
+        const double t = i / static_cast<double>(sampleRate);
+        const double x = t / seconds;
+        const double env = std::sin(3.14159265358979323846 * std::clamp(x, 0.0, 1.0));
+        filtered += 0.035 * (noise(rng) - filtered);
+        const double sample = filtered * env * 0.20;
+        data[static_cast<std::size_t>(i)] = static_cast<short>(sample * 32767.0);
+    }
+
     return data;
 }
 
 void ensure_audio_assets() {
     if (g_audioDir.empty()) return;
+
     std::error_code ec;
     std::filesystem::create_directories(g_audioDir, ec);
 
-    struct Asset {
-        const wchar_t* name;
-        double seconds;
-        double frequency;
-        double noise;
-        double amplitude;
-    };
+    // These files are regenerated by this build so older 8 kHz prototype
+    // sounds are automatically replaced on the next game start.
+    write_wave_file(g_audioDir / L"footstep1.wav", synth_footstep(false, 1));
+    write_wave_file(g_audioDir / L"footstep2.wav", synth_footstep(false, 2));
+    write_wave_file(g_audioDir / L"runstep1.wav", synth_footstep(true, 1));
+    write_wave_file(g_audioDir / L"runstep2.wav", synth_footstep(true, 2));
 
-    const Asset assets[] = {
-        {L"footstep.wav", 0.10, 86.0, 0.55, 0.55},
-        {L"runstep.wav", 0.08, 112.0, 0.48, 0.60},
-        {L"door.wav", 0.24, 72.0, 0.68, 0.52},
-        {L"flashlight.wav", 0.05, 1450.0, 0.12, 0.46},
-        {L"card.wav", 0.12, 980.0, 0.05, 0.40},
-        {L"nozzle.wav", 0.07, 420.0, 0.25, 0.44},
-        {L"receipt.wav", 0.30, 165.0, 0.35, 0.32},
-        {L"breath.wav", 0.45, 145.0, 0.80, 0.18},
-    };
-
-    for (const auto& asset : assets) {
-        const auto path = g_audioDir / asset.name;
-        if (!std::filesystem::exists(path)) {
-            write_wave_file(path, synth_sound(asset.seconds, asset.frequency, asset.noise, asset.amplitude));
-        }
-    }
+    write_wave_file(g_audioDir / L"door.wav", synth_effect(0.32, 72.0, 48.0, 0.70, 0.34, 11));
+    write_wave_file(g_audioDir / L"flashlight.wav", synth_effect(0.045, 1800.0, 900.0, 0.10, 0.28, 12));
+    write_wave_file(g_audioDir / L"card.wav", synth_effect(0.10, 820.0, 1180.0, 0.05, 0.22, 13));
+    write_wave_file(g_audioDir / L"nozzle.wav", synth_effect(0.12, 310.0, 160.0, 0.45, 0.28, 14));
+    write_wave_file(g_audioDir / L"receipt.wav", synth_effect(0.24, 520.0, 340.0, 0.58, 0.18, 15));
+    write_wave_file(g_audioDir / L"breath.wav", synth_breath());
 }
 
 void play_audio(const wchar_t* fileName) {
@@ -1267,9 +1329,11 @@ void enter_walk_mode() {
 
     transition_fade(true);
 
-    // ETS2/ATS developer camera is normally opened with the top-row 0 key.
-    tap_key('0');
-    std::this_thread::sleep_for(220ms);
+    // ETS2/ATS developer free camera is toggled with NUMPAD 0.
+    // The previous build incorrectly sent the top-row 0 key.
+    log_line(L"Walk enter: toggling developer camera with NUMPAD0.");
+    tap_key(VK_NUMPAD0);
+    std::this_thread::sleep_for(320ms);
 
     if (g_settings.autoDoorOffset) {
         // Small camera-zero offset from the driver's eye toward the door.
@@ -1313,7 +1377,8 @@ void leave_walk_mode() {
     }
 
     transition_fade(true);
-    tap_key('0');
+    log_line(L"Walk leave: returning from developer camera with NUMPAD0.");
+    tap_key(VK_NUMPAD0);
 
     if (flashlightWasOn) {
         std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -1556,7 +1621,10 @@ void worker_main() {
                 const double intervalSeconds = std::clamp(stride / speed, 0.12, 1.20);
 
                 if (motionNow >= nextStep) {
-                    play_audio(sprintNow ? L"runstep.wav" : L"footstep.wav");
+                    const wchar_t* stepSound = nullptr;
+                    if (sprintNow) stepSound = (bobPhase > 0) ? L"runstep1.wav" : L"runstep2.wav";
+                    else stepSound = (bobPhase > 0) ? L"footstep1.wav" : L"footstep2.wav";
+                    play_audio(stepSound);
 
                     if (g_settings.headBob) {
                         const int bobPixels = std::max(1, static_cast<int>(std::round(g_settings.bobAmount * 500.0)));
