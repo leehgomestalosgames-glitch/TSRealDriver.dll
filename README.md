@@ -2,12 +2,12 @@
 
 Independent ETS2/ATS driver-walking plug-in for the TSMS ecosystem.
 
-## TSRealDriver 0.5 — Native Camera Manager Test
+## TS Real Drive 0.5.2 — Camera Compatibility Test
 
 This build changes the walk entry path based on the supplied reference behavior and the user's ATS test.
 
 - F10 no longer simulates Numpad 0 to enter walk mode.
-- TSRealDriver resolves the game's `camera_manager`, finds the `debug_camera` slot through RTTI, writes the requested camera slot through the manager, and waits for the game to switch.
+- TS Real Drive resolves the game's `camera_manager`, recognizes camera classes through the game's type-name helper with an MSVC RTTI fallback, finds the `debug_camera` slot, writes the requested camera slot through the manager, and waits for the game to switch.
 - The player's own Numpad-0 free-camera mode remains separate.
 - If native camera resolution/switch fails, walk mode is not enabled and no fake footsteps are started.
 - Prototype footsteps are muted by default in this build; other interaction audio remains available.
