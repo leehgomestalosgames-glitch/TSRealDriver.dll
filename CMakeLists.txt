@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
-project(TSRealDriver VERSION 0.4.2 LANGUAGES CXX)
+project(TSRealDriver VERSION 0.5.0 LANGUAGES CXX)
 
 add_library(TSRealDriver SHARED
     src/plugin.cpp
     src/native_game_bridge.cpp
+    src/game_camera_bridge.cpp
     src/tsms_telemetry_bridge.cpp
 )
 target_compile_features(TSRealDriver PRIVATE cxx_std_20)
