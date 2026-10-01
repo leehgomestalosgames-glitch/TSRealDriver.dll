@@ -267,6 +267,103 @@ void send_wheel(int notches) {
     SendInput(1, &input, sizeof(INPUT));
 }
 
+
+void write_wave_file(const std::filesystem::path& path, const std::vector<short>& samples, int sampleRate = 8000) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+
+    const std::uint32_t dataSize = static_cast<std::uint32_t>(samples.size() * sizeof(short));
+    const std::uint32_t riffSize = 36u + dataSize;
+    const std::uint16_t audioFormat = 1;
+    const std::uint16_t channels = 1;
+    const std::uint16_t bits = 16;
+    const std::uint32_t byteRate = sampleRate * channels * (bits / 8);
+    const std::uint16_t blockAlign = channels * (bits / 8);
+
+    out.write("RIFF", 4);
+    out.write(reinterpret_cast<const char*>(&riffSize), 4);
+    out.write("WAVEfmt ", 8);
+
+    const std::uint32_t fmtSize = 16;
+    out.write(reinterpret_cast<const char*>(&fmtSize), 4);
+    out.write(reinterpret_cast<const char*>(&audioFormat), 2);
+    out.write(reinterpret_cast<const char*>(&channels), 2);
+    out.write(reinterpret_cast<const char*>(&sampleRate), 4);
+    out.write(reinterpret_cast<const char*>(&byteRate), 4);
+    out.write(reinterpret_cast<const char*>(&blockAlign), 2);
+    out.write(reinterpret_cast<const char*>(&bits), 2);
+
+    out.write("data", 4);
+    out.write(reinterpret_cast<const char*>(&dataSize), 4);
+    out.write(reinterpret_cast<const char*>(samples.data()), static_cast<std::streamsize>(dataSize));
+}
+
+std::vector<short> synth_sound(double seconds, double frequency, double noiseAmount, double amplitude) {
+    constexpr int sampleRate = 8000;
+    const int count = std::max(1, static_cast<int>(seconds * sampleRate));
+    std::vector<short> data(static_cast<size_t>(count));
+
+    std::mt19937 rng(0x54535244u + static_cast<unsigned>(frequency));
+    std::uniform_real_distribution<double> noise(-1.0, 1.0);
+
+    for (int i = 0; i < count; ++i) {
+        const double t = i / static_cast<double>(sampleRate);
+        const double envelope = std::max(0.0, 1.0 - i / static_cast<double>(count));
+        const double tone = std::sin(6.283185307179586 * frequency * t);
+        const double sample = (tone * (1.0 - noiseAmount) + noise(rng) * noiseAmount) * envelope * amplitude;
+        data[static_cast<size_t>(i)] = static_cast<short>(std::clamp(sample, -1.0, 1.0) * 32767.0);
+    }
+    return data;
+}
+
+void ensure_audio_assets() {
+    if (g_audioDir.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(g_audioDir, ec);
+
+    struct Asset {
+        const wchar_t* name;
+        double seconds;
+        double frequency;
+        double noise;
+        double amplitude;
+    };
+
+    const Asset assets[] = {
+        {L"footstep.wav", 0.10, 86.0, 0.55, 0.55},
+        {L"runstep.wav", 0.08, 112.0, 0.48, 0.60},
+        {L"door.wav", 0.24, 72.0, 0.68, 0.52},
+        {L"flashlight.wav", 0.05, 1450.0, 0.12, 0.46},
+        {L"card.wav", 0.12, 980.0, 0.05, 0.40},
+        {L"nozzle.wav", 0.07, 420.0, 0.25, 0.44},
+        {L"receipt.wav", 0.30, 165.0, 0.35, 0.32},
+        {L"breath.wav", 0.45, 145.0, 0.80, 0.18},
+    };
+
+    for (const auto& asset : assets) {
+        const auto path = g_audioDir / asset.name;
+        if (!std::filesystem::exists(path)) {
+            write_wave_file(path, synth_sound(asset.seconds, asset.frequency, asset.noise, asset.amplitude));
+        }
+    }
+}
+
+void play_audio(const wchar_t* fileName) {
+    if (!g_settings.soundEnabled || g_audioDir.empty()) return;
+    const auto path = g_audioDir / fileName;
+    if (!std::filesystem::exists(path)) return;
+    PlaySoundW(path.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+}
+
+void mouse_nudge(LONG dx, LONG dy) {
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = dx;
+    input.mi.dy = dy;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &input, sizeof(INPUT));
+}
+
 void launch_config_editor() {
     if (!std::filesystem::exists(g_configExePath)) {
         set_ui_status(L"CONFIG EXE NOT FOUND");
