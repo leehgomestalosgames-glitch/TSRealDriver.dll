@@ -876,14 +876,18 @@ LRESULT CALLBACK PromptWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         draw_text(dc, 18, 42, state.status.c_str(), 11, white, true);
 
         if (state.walking) {
-            std::wstring line = L"WASD walk  |  Shift run  |  Space jump  |  F enter cab  |  Ctrl+F10 settings";
+            std::wstring line = L"WASD walk  |  Shift run  |  Space jump  |  F interact  |  Ctrl+F10 settings";
             draw_text(dc, 18, 68, line.c_str(), 9, gray, false);
 
-            std::wstring line2 = L"Right click flashlight  |  G beam size  |  F7 fuel roleplay";
+            std::wstring line2 = L"Right click flashlight  |  G beam size  |  mouse wheel speed";
             draw_text(dc, 18, 92, line2.c_str(), 9, gray, false);
 
+            if (!state.context.empty()) {
+                draw_text(dc, 18, 118, state.context.c_str(), 10, gold, true);
+            }
+
             if (state.paused) {
-                draw_text(dc, 18, 118, L"WALK INPUT PAUSED (console mode)", 9, gold, true);
+                draw_text(dc, 18, 142, L"WALK INPUT PAUSED (console mode)", 9, gold, true);
             }
 
             if (state.fuelStage > 0) {
