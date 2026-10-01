@@ -12,7 +12,10 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <mmsystem.h>\n\n#include "native_game_bridge.hpp"
+#include <mmsystem.h>
+
+#include "native_game_bridge.hpp"
+#include "tsms_telemetry_bridge.hpp"
 
 namespace {
 
