@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <windowsx.h>
 #include <shellapi.h>
 
 #include <algorithm>
@@ -483,8 +484,8 @@ void update_slider_from_x(int index, int x) {
 void resize_to_work_area(HWND hwnd) {
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    const int w = std::min(1240, work.right - work.left - 40);
-    const int h = std::min(880, work.bottom - work.top - 40);
+    const int w = std::min(1240, static_cast<int>(work.right - work.left - 40));
+    const int h = std::min(880, static_cast<int>(work.bottom - work.top - 40));
     const int x = work.left + (work.right - work.left - w) / 2;
     const int y = work.top + (work.bottom - work.top - h) / 2;
     SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
