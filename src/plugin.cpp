@@ -1338,6 +1338,9 @@ void handle_fuel_interaction(bool interactNow, bool interactPressed) {
 
 void worker_main() {
     load_settings();
+    tsms_bridge_open();
+    refresh_game_state();
+    install_mouse_hook();
     create_overlay_windows();
 
     Edge f10Edge;
@@ -1353,13 +1356,35 @@ void worker_main() {
     Edge resetEyeEdge;
 
     auto lastReloadCheck = Clock::now();
+    auto nextTelemetry = Clock::now();
+    auto nextContext = Clock::now();
     auto nextStep = Clock::now();
     auto nextBreath = Clock::now();
+    auto lastFrame = Clock::now();
     Clock::time_point sprintStarted{};
     int bobPhase = 1;
+    bool lastTrailerAttached = g_gameState.trailerAttached;
 
     while (!g_stop.load()) {
         pump_messages();
+
+        const auto frameNow = Clock::now();
+        const double dt = std::clamp(
+            std::chrono::duration<double>(frameNow - lastFrame).count(),
+            0.0, 0.05);
+        lastFrame = frameNow;
+
+        if (frameNow >= nextTelemetry) {
+            refresh_game_state();
+
+            if (g_haveTelemetry && g_gameState.trailerAttached != lastTrailerAttached) {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                g_ui.trailerStage = 0;
+                lastTrailerAttached = g_gameState.trailerAttached;
+            }
+
+            nextTelemetry = frameNow + 50ms;
+        }
 
         const bool walking = [&] {
             std::lock_guard<std::mutex> lock(g_stateMutex);
@@ -1399,21 +1424,25 @@ void worker_main() {
         }
 
         if (walking && !paused) {
+            update_walker_world_estimate(dt);
+
+            // The game's developer/free-camera movement axes.
             mirror_key(g_settings.forwardKey, VK_NUMPAD8, g_sentForward);
-            mirror_key(g_settings.backwardKey, VK_NUMPAD5, g_sentBackward);
+            mirror_key(g_settings.backwardKey, VK_NUMPAD2, g_sentBackward);
             mirror_key(g_settings.leftKey, VK_NUMPAD4, g_sentLeft);
             mirror_key(g_settings.rightKey, VK_NUMPAD6, g_sentRight);
             mirror_key(g_settings.eyeUpKey, VK_NUMPAD9, g_sentEyeUp);
             mirror_key(g_settings.eyeDownKey, VK_NUMPAD3, g_sentEyeDown);
 
+            const int manualWheel = g_mouseWheel.exchange(0);
+            if (manualWheel != 0) {
+                set_ui_status(manualWheel > 0 ? L"WALK SPEED +" : L"WALK SPEED -");
+            }
+
             const bool sprintNow = key_down(g_settings.sprintKey);
             if (sprintEdge.pressed(sprintNow)) {
                 send_wheel(g_settings.sprintWheelNotches);
                 set_ui_status(L"RUN");
-            }
-            if (!sprintNow && sprintEdge.previous) {
-                // This branch is intentionally unreachable because Edge::pressed updates previous.
-                // Sprint release is handled below by a dedicated static state.
             }
 
             static bool sprintHeld = false;
@@ -1456,7 +1485,9 @@ void worker_main() {
                 if (sprintNow) {
                     if (sprintStarted == Clock::time_point{}) sprintStarted = motionNow;
                     const double runningFor = std::chrono::duration<double>(motionNow - sprintStarted).count();
-                    if (g_settings.breathingSound && runningFor >= g_settings.tiredAfterSeconds && motionNow >= nextBreath) {
+                    if (g_settings.breathingSound &&
+                        runningFor >= g_settings.tiredAfterSeconds &&
+                        motionNow >= nextBreath) {
                         play_audio(L"breath.wav");
                         nextBreath = motionNow + 3s;
                     }
@@ -1476,6 +1507,7 @@ void worker_main() {
                 send_key(VK_NUMPAD3, false);
                 set_ui_status(L"CROUCH");
             }
+
             static bool crouchHeld = false;
             if (!crouchNow && crouchHeld) {
                 send_key(VK_NUMPAD9, true);
@@ -1493,7 +1525,6 @@ void worker_main() {
 
             const bool resetEyeNow = key_down(g_settings.eyeResetKey);
             if (resetEyeEdge.pressed(resetEyeNow)) {
-                // Conservative reset: a short raise after crouch/eye adjustments.
                 hold_key_for(VK_NUMPAD9, 120ms);
                 set_ui_status(L"EYE HEIGHT RESET");
             }
@@ -1529,6 +1560,7 @@ void worker_main() {
                 update_overlay_visibility();
             }
 
+            // F7 remains a manual fallback. Normal fuel use is contextual and does not require it.
             const bool fuelNow = key_down(g_settings.fuelModeKey);
             if (fuelEdge.pressed(fuelNow)) {
                 begin_fuel_roleplay();
@@ -1543,13 +1575,104 @@ void worker_main() {
                 fuelStage = g_ui.fuelStage;
             }
 
-            if (fuelStage > 0) {
+            // Releasing F always stops an active game fueling hold.
+            if (fuelStage == 3 && !interactNow) {
+                send_key(VK_RETURN, false);
+                {
+                    std::lock_guard<std::mutex> lock(g_stateMutex);
+                    g_ui.fuelStage = 4;
+                    g_ui.fueling = false;
+                    g_ui.status = L"FUEL: RETURN NOZZLE / TAKE RECEIPT";
+                }
+                play_audio(L"nozzle.wav");
+            }
+
+            std::wstring interactionLabel;
+            InteractionKind interaction = current_interaction(interactionLabel);
+
+            if (interactPressed) {
+                switch (interaction) {
+                case InteractionKind::EnterCab:
+                    leave_walk_mode();
+                    break;
+
+                case InteractionKind::FuelCard: {
+                    {
+                        std::lock_guard<std::mutex> lock(g_stateMutex);
+                        g_ui.fuelStage = 2;
+                        g_ui.status = g_settings.fuelCardStep
+                            ? L"TS FLEET CARD ACCEPTED - TAKE NOZZLE"
+                            : L"TAKE NOZZLE";
+                    }
+                    play_audio(L"card.wav");
+                    break;
+                }
+
+                case InteractionKind::FuelNozzle: {
+                    int stageNow = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(g_stateMutex);
+                        stageNow = g_ui.fuelStage;
+                    }
+
+                    if (stageNow == 2) {
+                        if (g_walkerPositionValid) {
+                            double localX = 0.0;
+                            double localZ = 0.0;
+                            world_to_truck_local(g_walkerX, g_walkerZ, localX, localZ);
+                            save_learned_tank(localX, localZ);
+                        }
+
+                        send_key(VK_RETURN, true);
+                        {
+                            std::lock_guard<std::mutex> lock(g_stateMutex);
+                            g_ui.fuelStage = 3;
+                            g_ui.fueling = true;
+                            g_ui.status = L"FUELING - HOLD F";
+                        }
+                        play_audio(L"nozzle.wav");
+                    }
+                    break;
+                }
+
+                case InteractionKind::FuelReceipt:
+                    {
+                        std::lock_guard<std::mutex> lock(g_stateMutex);
+                        g_ui.fuelStage = 0;
+                        g_ui.fueling = false;
+                        g_ui.status = L"WALK MODE";
+                    }
+                    play_audio(L"receipt.wav");
+                    break;
+
+                case InteractionKind::Trailer:
+                    handle_trailer_interaction();
+                    break;
+
+                case InteractionKind::None:
+                default:
+                    break;
+                }
+            }
+
+            // If the user manually armed fuel roleplay with F7, keep its original fallback state machine.
+            {
+                std::lock_guard<std::mutex> lock(g_stateMutex);
+                fuelStage = g_ui.fuelStage;
+            }
+            if (!g_haveTelemetry && fuelStage > 0) {
                 handle_fuel_interaction(interactNow, interactPressed);
-            } else if (interactPressed) {
-                leave_walk_mode();
+            }
+
+            if (frameNow >= nextContext) {
+                update_context_prompt();
+                nextContext = frameNow + 100ms;
             }
         } else {
             release_walk_keys();
+            g_mouseDx.exchange(0);
+            g_mouseDy.exchange(0);
+            g_mouseWheel.exchange(0);
         }
 
         if (Clock::now() - lastReloadCheck > 1s) {
@@ -1562,6 +1685,8 @@ void worker_main() {
 
     release_walk_keys();
     send_key(VK_RETURN, false);
+    uninstall_mouse_hook();
+    tsms_bridge_close();
     destroy_overlay_windows();
 }
 
